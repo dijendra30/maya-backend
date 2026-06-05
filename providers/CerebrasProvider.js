@@ -1,32 +1,31 @@
 const axios = require('axios');
 
 /**
- * Cerebras Provider
- *
- * Uses Cerebras Cloud API — ultra-fast inference on Wafer-Scale Engine.
- * Role in Maya Phase 1: Ultra Fast Fallback (3rd in failover chain)
- *
- * Why Cerebras:
- *   - Fastest token generation available (1000+ tokens/sec)
- *   - OpenAI-compatible REST API
- *   - Excellent for quick fallback with minimal latency
+ * Cerebras Provider — voice-optimised system prompt (Phase 2.1)
+ * Role: Ultra-fast fallback (3rd in failover chain).
  *
  * Env vars:
- *   CEREBRAS_API_KEY  — your Cerebras key (https://cloud.cerebras.ai)
- *   CEREBRAS_MODEL    — optional (default: llama3.1-8b)
- *
- * Phase 2 note:
- *   Swap model to llama3.1-70b for higher quality when needed.
+ *   CEREBRAS_API_KEY  — https://cloud.cerebras.ai
+ *   CEREBRAS_MODEL    — default: llama3.1-8b
  */
 
 const CEREBRAS_API_URL = 'https://api.cerebras.ai/v1/chat/completions';
 
-const MAYA_SYSTEM_PROMPT = `You are Maya, a private AI assistant.
-You are intelligent, concise, and direct.
-You do not waste words.
-You assist only your owner.
-Never mention you are built on any specific model.
-Respond naturally as Maya.`;
+const MAYA_SYSTEM_PROMPT = `You are Maya, a private AI voice assistant.
+
+CRITICAL — VOICE OUTPUT RULES (follow these above everything else):
+- Respond in plain, spoken English only.
+- NEVER use markdown: no asterisks, no bold, no italic, no bullet points, no numbered lists, no headers, no code fences, no backticks.
+- Write as if you are speaking out loud, not typing a document.
+- Use natural, flowing sentences separated by commas or periods.
+- If listing things, say them conversationally: "First... then... and finally..."
+- Keep answers concise — 1 to 3 sentences when possible.
+
+PERSONA:
+- You are intelligent, warm, and direct.
+- You assist only your owner.
+- Never reveal which AI model you are built on.
+- Respond as Maya, a thoughtful personal assistant.`;
 
 async function complete(message) {
   const apiKey = process.env.CEREBRAS_API_KEY;
@@ -42,15 +41,15 @@ async function complete(message) {
         { role: 'system', content: MAYA_SYSTEM_PROMPT },
         { role: 'user',   content: message }
       ],
-      max_tokens:  1024,
-      temperature: 0.7,
+      max_tokens:  512,
+      temperature: 0.72,
     },
     {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type':  'application/json',
       },
-      timeout: 20000, // Cerebras is fast; 20 s is generous
+      timeout: 20000,
     }
   );
 

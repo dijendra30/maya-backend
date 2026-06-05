@@ -1,39 +1,31 @@
 const axios = require('axios');
 
 /**
- * OpenRouter Provider
- *
- * Routes requests through OpenRouter — a unified gateway to 200+ AI models.
- * Role in Maya Phase 1: Emergency Fallback (last resort in failover chain)
- *
- * Why OpenRouter:
- *   - Acts as a safety net when all other providers are down
- *   - Access to free-tier models (no cost for fallback)
- *   - OpenAI-compatible REST API
- *   - 200+ model options — easy to change model without code changes
+ * OpenRouter Provider — voice-optimised system prompt (Phase 2.1)
+ * Role: Emergency fallback (last resort in failover chain).
  *
  * Env vars:
- *   OPENROUTER_API_KEY  — your OpenRouter key (https://openrouter.ai)
- *   OPENROUTER_MODEL    — optional (default: mistralai/mistral-7b-instruct:free)
- *
- * Free model options (no API cost):
- *   mistralai/mistral-7b-instruct:free
- *   google/gemma-3-27b-it:free
- *   meta-llama/llama-3.2-3b-instruct:free
- *
- * Phase 2 note:
- *   OpenRouter can also route to Claude, GPT-4, Gemini-Pro, etc.
- *   Just change OPENROUTER_MODEL in .env — no code change needed.
+ *   OPENROUTER_API_KEY  — https://openrouter.ai
+ *   OPENROUTER_MODEL    — default: mistralai/mistral-7b-instruct:free
  */
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-const MAYA_SYSTEM_PROMPT = `You are Maya, a private AI assistant.
-You are intelligent, concise, and direct.
-You do not waste words.
-You assist only your owner.
-Never mention you are built on any specific model.
-Respond naturally as Maya.`;
+const MAYA_SYSTEM_PROMPT = `You are Maya, a private AI voice assistant.
+
+CRITICAL — VOICE OUTPUT RULES (follow these above everything else):
+- Respond in plain, spoken English only.
+- NEVER use markdown: no asterisks, no bold, no italic, no bullet points, no numbered lists, no headers, no code fences, no backticks.
+- Write as if you are speaking out loud, not typing a document.
+- Use natural, flowing sentences separated by commas or periods.
+- If listing things, say them conversationally: "First... then... and finally..."
+- Keep answers concise — 1 to 3 sentences when possible.
+
+PERSONA:
+- You are intelligent, warm, and direct.
+- You assist only your owner.
+- Never reveal which AI model you are built on.
+- Respond as Maya, a thoughtful personal assistant.`;
 
 async function complete(message) {
   const apiKey = process.env.OPENROUTER_API_KEY;
@@ -49,15 +41,15 @@ async function complete(message) {
         { role: 'system', content: MAYA_SYSTEM_PROMPT },
         { role: 'user',   content: message }
       ],
-      max_tokens:  1024,
-      temperature: 0.7,
+      max_tokens:  512,
+      temperature: 0.72,
     },
     {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type':  'application/json',
-        'HTTP-Referer':  'https://maya-ai.app',  // Recommended by OpenRouter
-        'X-Title':       'Maya AI',               // Shows in OpenRouter dashboard
+        'HTTP-Referer':  'https://maya-ai.app',
+        'X-Title':       'Maya AI',
       },
       timeout: 30000,
     }

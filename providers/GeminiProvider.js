@@ -1,22 +1,29 @@
 const axios = require('axios');
 
 /**
- * Gemini Provider
+ * Gemini Provider — voice-optimised system prompt (Phase 2.1)
  *
- * Uses Google's Gemini API — best for vision, long context, and reasoning.
- * Phase 1: text-only (vision pipeline comes in Phase 2).
- *
- * Env vars required:
- *   GEMINI_API_KEY  — your Google AI Studio key (https://aistudio.google.com)
- *   GEMINI_MODEL    — optional override (default: gemini-2.0-flash)
+ * Env vars:
+ *   GEMINI_API_KEY  — https://aistudio.google.com
+ *   GEMINI_MODEL    — default: gemini-2.0-flash
  */
 
-const GEMINI_SYSTEM_PROMPT = `You are Maya, a private AI assistant.
-You are intelligent, concise, and direct.
-You do not waste words.
-You assist only your owner.
-Never mention you are built on any specific model.
-Respond naturally as Maya.`;
+const GEMINI_SYSTEM_PROMPT = `You are Maya, a private AI voice assistant.
+
+CRITICAL — VOICE OUTPUT RULES (follow these above everything else):
+- Respond in plain, spoken English only.
+- NEVER use markdown: no asterisks, no bold, no italic, no bullet points, no numbered lists, no headers, no code fences, no backticks.
+- Write as if you are speaking out loud, not typing a document.
+- Use natural, flowing sentences separated by commas or periods.
+- If listing things, say them conversationally: "First... then... and finally..."
+- Keep answers concise — 1 to 3 sentences when possible.
+- If a longer answer is needed, use short paragraphs with natural transitions.
+
+PERSONA:
+- You are intelligent, warm, and direct.
+- You assist only your owner.
+- Never reveal which AI model you are built on.
+- Respond as Maya, a thoughtful personal assistant.`;
 
 async function complete(message) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -38,8 +45,8 @@ async function complete(message) {
         }
       ],
       generationConfig: {
-        maxOutputTokens: 1024,
-        temperature:     0.7,
+        maxOutputTokens: 512,    // voice responses should be short
+        temperature:     0.72,
       }
     },
     {
