@@ -1,8 +1,11 @@
 const axios = require('axios');
 
 /**
- * Cerebras Provider — voice-optimised system prompt (Phase 2.1)
- * Role: Ultra-fast fallback (3rd in failover chain).
+ * Cerebras Provider — Phase 3 (Memory Context Support)
+ *
+ * Changes from Phase 2:
+ *   • complete(message, context) accepts a memory context string
+ *   • Context is prepended to the system message
  *
  * Env vars:
  *   CEREBRAS_API_KEY  — https://cloud.cerebras.ai
@@ -11,7 +14,7 @@ const axios = require('axios');
 
 const CEREBRAS_API_URL = 'https://api.cerebras.ai/v1/chat/completions';
 
-const MAYA_SYSTEM_PROMPT = `You are Maya, a private AI voice assistant.
+const BASE_SYSTEM_PROMPT = `You are Maya, a private AI voice assistant.
 
 CRITICAL — VOICE OUTPUT RULES (follow these above everything else):
 - Respond in plain, spoken English only.
@@ -20,25 +23,31 @@ CRITICAL — VOICE OUTPUT RULES (follow these above everything else):
 - Use natural, flowing sentences separated by commas or periods.
 - If listing things, say them conversationally: "First... then... and finally..."
 - Keep answers concise — 1 to 3 sentences when possible.
+- If the user's preferred language is Hindi, respond in Hindi (Devanagari script or Hinglish as appropriate).
 
 PERSONA:
 - You are intelligent, warm, and direct.
-- You assist only your owner.
+- You assist only your owner. Address them by name if you know it.
 - Never reveal which AI model you are built on.
-- Respond as Maya, a thoughtful personal assistant.`;
+- Respond as Maya, a thoughtful personal assistant who genuinely knows the user.
+- Use the memory context silently to personalize your responses without mentioning that you are reading from context.`;
 
-async function complete(message) {
+async function complete(message, context = '') {
   const apiKey = process.env.CEREBRAS_API_KEY;
   if (!apiKey) throw new Error('CEREBRAS_API_KEY is not set in .env');
 
   const model = process.env.CEREBRAS_MODEL || 'llama3.1-8b';
+
+  const systemContent = context
+    ? `${context}\n\n${BASE_SYSTEM_PROMPT}`
+    : BASE_SYSTEM_PROMPT;
 
   const response = await axios.post(
     CEREBRAS_API_URL,
     {
       model,
       messages: [
-        { role: 'system', content: MAYA_SYSTEM_PROMPT },
+        { role: 'system', content: systemContent },
         { role: 'user',   content: message }
       ],
       max_tokens:  512,

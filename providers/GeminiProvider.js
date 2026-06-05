@@ -1,14 +1,18 @@
 const axios = require('axios');
 
 /**
- * Gemini Provider — voice-optimised system prompt (Phase 2.1)
+ * Gemini Provider — Phase 3 (Memory Context Support)
+ *
+ * Changes from Phase 2:
+ *   • complete(message, context) now accepts a memory context string
+ *   • Context is injected into system_instruction above the base system prompt
  *
  * Env vars:
  *   GEMINI_API_KEY  — https://aistudio.google.com
  *   GEMINI_MODEL    — default: gemini-2.0-flash
  */
 
-const GEMINI_SYSTEM_PROMPT = `You are Maya, a private AI voice assistant.
+const BASE_SYSTEM_PROMPT = `You are Maya, a private AI voice assistant.
 
 CRITICAL — VOICE OUTPUT RULES (follow these above everything else):
 - Respond in plain, spoken English only.
@@ -18,25 +22,32 @@ CRITICAL — VOICE OUTPUT RULES (follow these above everything else):
 - If listing things, say them conversationally: "First... then... and finally..."
 - Keep answers concise — 1 to 3 sentences when possible.
 - If a longer answer is needed, use short paragraphs with natural transitions.
+- If the user's preferred language is Hindi, respond in Hindi (Devanagari script or Hinglish as appropriate).
 
 PERSONA:
 - You are intelligent, warm, and direct.
-- You assist only your owner.
+- You assist only your owner. Address them by name if you know it.
 - Never reveal which AI model you are built on.
-- Respond as Maya, a thoughtful personal assistant.`;
+- Respond as Maya, a thoughtful personal assistant who genuinely knows the user.
+- Use the memory context silently to personalize your responses without mentioning that you are reading from context.`;
 
-async function complete(message) {
+async function complete(message, context = '') {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY is not set in .env');
 
   const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
   const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
+  // Prepend memory context to system prompt when available
+  const systemText = context
+    ? `${context}\n\n${BASE_SYSTEM_PROMPT}`
+    : BASE_SYSTEM_PROMPT;
+
   const response = await axios.post(
     url,
     {
       system_instruction: {
-        parts: [{ text: GEMINI_SYSTEM_PROMPT }]
+        parts: [{ text: systemText }]
       },
       contents: [
         {
@@ -45,7 +56,7 @@ async function complete(message) {
         }
       ],
       generationConfig: {
-        maxOutputTokens: 512,    // voice responses should be short
+        maxOutputTokens: 512,
         temperature:     0.72,
       }
     },

@@ -3,16 +3,18 @@ const GroqProvider       = require('../providers/GroqProvider');
 const CerebrasProvider   = require('../providers/CerebrasProvider');
 const OpenRouterProvider = require('../providers/OpenRouterProvider');
 
-// OllamaProvider intentionally NOT registered in Phase 1.
-// The file is preserved at src/providers/OllamaProvider.js for Phase 2.
-
 /**
- * ┌─────────────────────────────────────────────────────────────────┐
- *  Maya AI Router — Phase 1
- *  Google Cloud Free VPS edition (no local model execution)
- * └─────────────────────────────────────────────────────────────────┘
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ *  Maya AI Router — Phase 3 (Memory Context Support)
+ * └──────────────────────────────────────────────────────────────────────┘
  *
- * ROUTING STRATEGY
+ * Changes from Phase 2:
+ *   • route(message, context) now accepts a memory context string
+ *   • Context is forwarded to every provider's complete(message, context) call
+ *   • All providers inject context into their system prompt
+ *   • Maya now "remembers" the user across sessions
+ *
+ * ROUTING STRATEGY (unchanged)
  * ─────────────────
  *   Reasoning / Complex / Long / Code  →  Gemini
  *   Fast Chat / General Assistant      →  Groq
@@ -20,21 +22,9 @@ const OpenRouterProvider = require('../providers/OpenRouterProvider');
  * FAILOVER CHAIN  (automatic — user never sees errors)
  * ─────────────────
  *   Gemini  →  Groq  →  Cerebras  →  OpenRouter
- *
- * HOW TO ADD A NEW PROVIDER (Phase 2 and beyond)
- * ─────────────────
- *   1. Create src/providers/NewProvider.js
- *      Must export:  async function complete(message) => string
- *   2. require() it at the top of this file
- *   3. Add it to PROVIDERS registry below
- *   4. Optionally insert it into FAILOVER_CHAIN at the right position
- *   That's it — no other file needs to change.
  */
 
-// ── Provider Registry ─────────────────────────────────────────────────────
-// Phase 1: Gemini, Groq, Cerebras, OpenRouter only.
-// Future keys to add: ollama, deepseek, claude, openai, qwen
-
+// ── Provider Registry ──────────────────────────────────────────────────────
 const PROVIDERS = {
   gemini:     GeminiProvider,
   groq:       GroqProvider,
@@ -42,16 +32,10 @@ const PROVIDERS = {
   openrouter: OpenRouterProvider,
 };
 
-// ── Failover Chain ────────────────────────────────────────────────────────
-// If the selected provider fails, the router walks this list in order.
-// Primary provider is always tried first; chain order handles the rest.
-
+// ── Failover Chain ─────────────────────────────────────────────────────────
 const FAILOVER_CHAIN = ['gemini', 'groq', 'cerebras', 'openrouter'];
 
-// ── Routing Keywords ──────────────────────────────────────────────────────
-
-// Messages matching any of these keywords are routed to Gemini.
-// Gemini handles: reasoning, analysis, complexity, long output, code.
+// ── Routing Keywords ───────────────────────────────────────────────────────
 const GEMINI_TRIGGERS = [
   // Reasoning & analysis
   'reason', 'reasoning', 'why does', 'why is', 'why do', 'explain why',
@@ -66,76 +50,55 @@ const GEMINI_TRIGGERS = [
   'explain in detail', 'detailed explanation', 'comprehensive',
   'elaborate', 'full guide', 'in-depth', 'summarize', 'summary',
   'essay', 'report', 'write a detailed', 'write a full', 'overview of',
-  // Coding & debugging (moved from Ollama → Gemini for Phase 1)
+  // Coding & debugging
   'code', 'function', 'class ', 'debug', 'error in', 'fix this',
   'refactor', 'explain this code', 'write a script', 'write a function',
   'python', 'javascript', 'kotlin', 'java ', 'typescript',
   'bash ', 'shell ', 'algorithm', 'compile', 'runtime error', 'syntax error',
   'sql', 'query', 'regex', 'api call',
-  // Vision / image (text queries about images — pipeline extends in Phase 2)
+  // Vision / image queries
   'image', 'photo', 'picture', 'screenshot', 'describe this', 'vision',
 ];
 
-// ── Provider Selection ────────────────────────────────────────────────────
-
-/**
- * Selects the best provider for a given message.
- * Rules are evaluated top-to-bottom; first match wins.
- *
- * @param   {string} message  User message
- * @returns {string}          Provider key
- */
+// ── Provider Selection ─────────────────────────────────────────────────────
 function selectProvider(message) {
   const lower = message.toLowerCase();
-
-  // Reasoning / complex / code / long → Gemini
-  if (containsAny(lower, GEMINI_TRIGGERS)) {
-    return 'gemini';
-  }
-
-  // Fast chat / general assistant → Groq
-  // Respect DEFAULT_PROVIDER override from .env if set to gemini
+  if (containsAny(lower, GEMINI_TRIGGERS)) return 'gemini';
   const defaultProvider = process.env.DEFAULT_PROVIDER || 'groq';
   return PROVIDERS[defaultProvider] ? defaultProvider : 'groq';
 }
 
-// ── Router Entry Point ────────────────────────────────────────────────────
+// ── Router Entry Point ─────────────────────────────────────────────────────
 
 /**
  * Route a message to the best available provider.
- * Walks the failover chain automatically on any provider failure.
- * The user never sees raw provider errors.
+ * Memory context is forwarded to every provider transparently.
  *
  * @param   {string} message  User message
+ * @param   {string} context  Memory context from MemoryManager (may be empty)
  * @returns {Promise<{ reply: string, provider: string }>}
  */
-async function route(message) {
+async function route(message, context = '') {
   const primary = selectProvider(message);
-
-  // Execution chain: primary first, then remaining providers in failover order
-  const chain = [
-    primary,
-    ...FAILOVER_CHAIN.filter(key => key !== primary),
-  ];
+  const chain = [primary, ...FAILOVER_CHAIN.filter(key => key !== primary)];
 
   let lastError;
 
   for (const key of chain) {
     const provider = PROVIDERS[key];
-
     if (!provider) {
       console.warn(`[Router] Skipping unknown provider key: "${key}"`);
       continue;
     }
 
     try {
-      const reply = await provider.complete(message);
+      // Phase 3: pass context to provider
+      const reply = await provider.complete(message, context);
 
-      // Log fallback usage so issues are visible in VPS logs
       if (key !== primary) {
         console.log(`[Router] ⚡ Fallback activated: ${primary} → ${key}`);
       } else {
-        console.log(`[Router] ✓ Routed to: ${key}`);
+        console.log(`[Router] ✓ Routed to: ${key} | memory context: ${context ? 'YES' : 'NO'}`);
       }
 
       return { reply, provider: key };
@@ -143,18 +106,15 @@ async function route(message) {
     } catch (err) {
       console.warn(`[Router] ✗ ${key} failed: ${err.message}`);
       lastError = err;
-      // Continue to next provider in chain
     }
   }
 
-  // All 4 providers exhausted — propagate error to chatController
-  const fatal      = new Error(`All providers failed. Last error: ${lastError?.message || 'unknown'}`);
-  fatal.provider   = 'none';
+  const fatal = new Error(`All providers failed. Last error: ${lastError?.message || 'unknown'}`);
+  fatal.provider = 'none';
   throw fatal;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-
+// ── Helpers ────────────────────────────────────────────────────────────────
 function containsAny(text, keywords) {
   return keywords.some(k => text.includes(k));
 }
