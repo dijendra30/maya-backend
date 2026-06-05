@@ -1,279 +1,280 @@
-/**
- * ╔══════════════════════════════════════════════════════════════════╗
- *  Maya TTS Service — Phase 2.2  (Reliability fix)
- *
- *  ROOT CAUSE of audioUrl=null in previous version:
- *    <mstts:express-as style="chat"> was embedded INSIDE <prosody>
- *    in the msedge-tts template. Azure TTS rejects this nesting order
- *    (express-as must wrap prosody, not the other way around) and throws,
- *    which the chatController try-catch swallows → audioUrl stays null
- *    → Android falls back to system TTS → sounds robotic.
- *
- *  FIX:
- *    Pass clean plain text only — no custom SSML fragments.
- *    msedge-tts builds its own valid SSML template around the text.
- *    AriaNeural with clean input already sounds dramatically more
- *    natural than Android TTS or markdown-polluted text.
- *
- *  Text preprocessing is still applied — strips all markdown symbols
- *  that would be read literally ("asterisk asterisk bold asterisk…").
- * ╚══════════════════════════════════════════════════════════════════╝
- */
-
+const crypto = require('crypto');
+const fs = require('fs');
+const fsp = require('fs/promises');
+const path = require('path');
+const { pipeline } = require('stream/promises');
 const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
-const path   = require('path');
-const fs     = require('fs');
-const { v4: uuidv4 } = require('uuid');
 
-// ── Config ────────────────────────────────────────────────────────────────────
-
-const TEMP_DIR   = path.join(__dirname, '../../temp/audio');
-const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+const TEMP_DIR = path.resolve(process.env.TTS_TEMP_DIR || path.join(process.cwd(), 'temp', 'audio'));
+const MAX_AGE_MS = Number(process.env.TTS_FILE_TTL_MS || 10 * 60 * 1000);
+const TTS_TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS || 12_000);
+const TTS_MAX_CHARS = Number(process.env.TTS_MAX_CHARS || 1000);
 
 const SUPPORTED_VOICES = [
-  'en-US-AriaNeural',   // Female — warm, conversational (DEFAULT)
-  'en-US-JennyNeural',  // Female — assistant style
-  'en-US-GuyNeural',    // Male   — confident
-  'en-GB-BrianNeural',  // Male   — British accent
+  'en-US-AriaNeural',
+  'en-US-JennyNeural',
+  'en-US-GuyNeural',
+  'en-GB-BrianNeural',
 ];
 
+const DEFAULT_VOICE = 'en-US-AriaNeural';
 const MAYA_VOICE = SUPPORTED_VOICES.includes(process.env.TTS_VOICE)
   ? process.env.TTS_VOICE
-  : 'en-US-AriaNeural';
+  : DEFAULT_VOICE;
 
-// ── Directory Setup ───────────────────────────────────────────────────────────
+fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
-  console.log(`[TTS] Created temp directory: ${TEMP_DIR}`);
+function preprocessForTTS(rawText) {
+  if (typeof rawText !== 'string') return '';
+
+  let text = rawText;
+
+  text = text.replace(/```[\s\S]*?```/g, '');
+  text = text.replace(/`([^`\n]+)`/g, '$1');
+  text = text.replace(/^#{1,6}\s+/gm, '');
+  text = text.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+  text = text.replace(/__([^_\n]+)__/g, '$1');
+  text = text.replace(/\*([^*\n]+)\*/g, '$1');
+  text = text.replace(/_([^_\n]+)_/g, '$1');
+  text = text.replace(/~~([^~\n]+)~~/g, '$1');
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  text = text.replace(/https?:\/\/[^\s)>\]]+/g, 'the link');
+  text = text.replace(/^>\s*/gm, '');
+  text = text.replace(/^[-*_]{3,}\s*$/gm, '');
+  text = text.replace(/^\s*[-*]\s+/gm, '');
+  text = text.replace(/^\s*\d+\.\s+/gm, '');
+  text = text.replace(/\|:?[-\s]+:?\|/g, '');
+  text = text.replace(/\|/g, ' ');
+  text = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
+  text = text.replace(/ & /g, ' and ');
+  text = text.replace(/ \+ /g, ' plus ');
+  text = text.replace(/(\d)%/g, '$1 percent');
+  text = text.replace(/\$/g, 'dollars ');
+  text = text.replace(/\bUSD\b/g, 'U.S. dollars');
+  text = text.replace(/\be\.g\./gi, 'for example');
+  text = text.replace(/\bi\.e\./gi, 'that is');
+  text = text.replace(/\betc\./gi, 'and so on');
+  text = text.replace(/\bvs\./gi, 'versus');
+  text = text.replace(/\bDr\./g, 'Doctor');
+  text = text.replace(/\bMr\./g, 'Mister');
+  text = text.replace(/\bMrs\./g, 'Missus');
+  text = text.replace(/[ \t]{2,}/g, ' ');
+  text = text.replace(/\n{3,}/g, '\n\n');
+
+  return text.trim();
 }
 
-// ── Text Preprocessor ─────────────────────────────────────────────────────────
-//
-// Strips all markdown and symbols that Edge TTS would read literally.
-// This is the biggest single quality improvement — without it,
-// "**Hello!**" is synthesised as "asterisk asterisk Hello asterisk asterisk".
-
-function preprocessForTTS(raw) {
-  let t = raw;
-
-  // Code blocks  (``` ... ```)  → silent removal
-  t = t.replace(/```[\w]*\n[\s\S]*?```/g, '');
-  t = t.replace(/```[\s\S]*?```/g, '');
-
-  // Inline code  (`word`)  → just the word
-  t = t.replace(/`([^`\n]+)`/g, '$1');
-
-  // Headings  (# ## ###)  → plain text
-  t = t.replace(/^#{1,6}\s+/gm, '');
-
-  // Bold  **text** or __text__
-  t = t.replace(/\*\*([^*\n]+)\*\*/g, '$1');
-  t = t.replace(/__([^_\n]+)__/g,     '$1');
-
-  // Italic  *text* or _text_
-  t = t.replace(/\*([^*\n]+)\*/g, '$1');
-  t = t.replace(/_([^_\n]+)_/g,   '$1');
-
-  // Strikethrough  ~~text~~
-  t = t.replace(/~~([^~\n]+)~~/g, '$1');
-
-  // Links  [label](url)  → label only
-  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-
-  // Bare URLs  → "the link"
-  t = t.replace(/https?:\/\/[^\s)>\]]+/g, 'the link');
-
-  // Blockquotes  (> text)
-  t = t.replace(/^>\s*/gm, '');
-
-  // Horizontal rules  (--- or ***)
-  t = t.replace(/^[-*_]{3,}\s*$/gm, '');
-
-  // Bullet lists  (- item  *item  •item)
-  t = t.replace(/^[\s]*[-*•]\s+/gm, '');
-
-  // Numbered lists  (1. 2.)  → strip number, keep text
-  t = t.replace(/^\s*\d+\.\s+/gm, '');
-
-  // Tables  → remove pipes and dashes
-  t = t.replace(/\|:?[-\s]+:?\|/g, '');
-  t = t.replace(/\|/g, ' ');
-
-  // Emoji (Unicode blocks)
-  t = t.replace(
-    /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu,
-    ''
-  );
-
-  // Common symbol conversions
-  t = t.replace(/ & /g,    ' and ');
-  t = t.replace(/ \+ /g,   ' plus ');
-  t = t.replace(/(\d)%/g,  '$1 percent');
-  t = t.replace(/\$/g,     'dollars ');
-  t = t.replace(/°C/g,     ' degrees Celsius');
-  t = t.replace(/°F/g,     ' degrees Fahrenheit');
-  t = t.replace(/°/g,      ' degrees');
-
-  // Abbreviations → natural spoken form
-  t = t.replace(/\be\.g\./gi,  'for example');
-  t = t.replace(/\bi\.e\./gi,  'that is');
-  t = t.replace(/\betc\./gi,   'and so on');
-  t = t.replace(/\bvs\./gi,    'versus');
-  t = t.replace(/\bDr\./g,     'Doctor');
-  t = t.replace(/\bMr\./g,     'Mister');
-  t = t.replace(/\bMrs\./g,    'Missus');
-
-  // Normalise whitespace
-  t = t.replace(/ {2,}/g, ' ');
-  t = t.replace(/\n{3,}/g, '\n\n');
-  t = t.trim();
-
-  return t;
-}
-
-// ── Safe truncation at sentence boundary ─────────────────────────────────────
-
-function truncateAtSentence(text, maxChars) {
+function truncateAtSentence(text, maxChars = TTS_MAX_CHARS) {
   if (text.length <= maxChars) return text;
-  const slice = text.substring(0, maxChars);
-  const last  = Math.max(
+
+  const slice = text.slice(0, maxChars);
+  const sentenceEnd = Math.max(
     slice.lastIndexOf('. '),
     slice.lastIndexOf('! '),
     slice.lastIndexOf('? '),
   );
-  if (last > maxChars * 0.5) return slice.substring(0, last + 1).trim();
-  const lastSpace = slice.lastIndexOf(' ');
-  return (lastSpace > 0 ? slice.substring(0, lastSpace) : slice).trim() + '.';
-}
 
-// ── Core: Text → MP3 ─────────────────────────────────────────────────────────
-
-/**
- * Convert AI response text to an MP3 file using Edge TTS neural voice.
- *
- * Pipeline: raw text → preprocessForTTS → plain text → msedge-tts → MP3
- * Retries once on transient failure (WebSocket drop, timeout, empty file).
- *
- * @param   {string} rawText  Raw AI response (may contain markdown).
- * @returns {Promise<string>} Filename of the generated MP3 in TEMP_DIR.
- * @throws  Re-throws after 2 failed attempts so chatController can log.
- */
-async function textToSpeech(rawText) {
-  if (!rawText || rawText.trim().length === 0) {
-    throw new Error('Empty text');
+  if (sentenceEnd > maxChars * 0.5) {
+    return slice.slice(0, sentenceEnd + 1).trim();
   }
 
-  // 1. Strip markdown / symbols
+  const lastSpace = slice.lastIndexOf(' ');
+  return `${(lastSpace > 0 ? slice.slice(0, lastSpace) : slice).trim()}.`;
+}
+
+function escapeSsmlText(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+}
+
+function createAudioFilename() {
+  return `maya_${Date.now()}_${crypto.randomUUID()}.mp3`;
+}
+
+function isGeneratedAudioFilename(filename) {
+  return /^maya_\d{13}_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.mp3$/i
+    .test(filename);
+}
+
+function getAudioFilePath(filename) {
+  if (!isGeneratedAudioFilename(filename)) {
+    throw new Error('Invalid audio filename');
+  }
+
+  const resolved = path.resolve(TEMP_DIR, filename);
+  if (!resolved.startsWith(`${TEMP_DIR}${path.sep}`)) {
+    throw new Error('Invalid audio path');
+  }
+
+  return resolved;
+}
+
+function ttsOptions() {
+  return {
+    rate: process.env.TTS_RATE || '+0%',
+    pitch: process.env.TTS_PITCH || '+0Hz',
+    volume: process.env.TTS_VOLUME || '+0%',
+  };
+}
+
+async function synthesizeToFile(input, tmpPath, voice) {
+  const tts = new MsEdgeTTS();
+
+  try {
+    await withTimeout(
+      tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3, {
+        sentenceBoundaryEnabled: false,
+        wordBoundaryEnabled: false,
+      }),
+      TTS_TIMEOUT_MS,
+      'Edge TTS metadata',
+    );
+
+    const { audioStream } = tts.toStream(input, ttsOptions());
+    await withTimeout(
+      pipeline(audioStream, fs.createWriteStream(tmpPath, { flags: 'wx' })),
+      TTS_TIMEOUT_MS,
+      'Edge TTS audio stream',
+    );
+  } finally {
+    tts.close();
+  }
+}
+
+async function textToSpeech(rawText, options = {}) {
   const clean = preprocessForTTS(rawText);
-  if (!clean) throw new Error('Text was empty after preprocessing');
+  if (!clean) {
+    throw new Error('Text was empty after TTS preprocessing');
+  }
 
-  // 2. Truncate at sentence boundary (~1000 chars → ~30 s of speech)
-  const input = truncateAtSentence(clean, 1000);
-  console.log(`[TTS] Input (${input.length} chars): "${input.substring(0, 80)}${input.length > 80 ? '…' : ''}"`);
-
-  // 3. Generate MP3 with retry — PLAIN TEXT, no custom SSML
-  //    msedge-tts wraps this in its own valid SSML template internally.
-  const filename  = `maya_${uuidv4()}.mp3`;
-  const filePath  = path.join(TEMP_DIR, filename);
-  const startTime = Date.now();
+  const voice = SUPPORTED_VOICES.includes(options.voice) ? options.voice : MAYA_VOICE;
+  const input = escapeSsmlText(truncateAtSentence(clean));
+  const filename = createAudioFilename();
+  const finalPath = getAudioFilePath(filename);
+  const tmpPath = `${finalPath}.${process.pid}.tmp`;
+  const startedAt = Date.now();
 
   let lastError;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const tts = new MsEdgeTTS();
-      await tts.setMetadata(MAYA_VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
-      await tts.toFile(filePath, input);
 
-      // Verify file was actually written and has content
-      if (!fs.existsSync(filePath) || fs.statSync(filePath).size === 0) {
-        throw new Error('TTS generated an empty or missing file');
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await synthesizeToFile(input, tmpPath, voice);
+      const stat = await fsp.stat(tmpPath);
+      if (stat.size === 0) {
+        throw new Error('Edge TTS returned an empty audio file');
       }
 
-      const elapsedMs = Date.now() - startTime;
-      const sizeKB    = Math.round(fs.statSync(filePath).size / 1024);
-      if (attempt > 1) console.log(`[TTS] ✓ Recovered on attempt ${attempt}`);
-      console.log(`[TTS] ✓ ${filename} — ${sizeKB}KB in ${elapsedMs}ms (${MAYA_VOICE})`);
-      return filename;
+      await fsp.rename(tmpPath, finalPath);
 
-    } catch (err) {
-      lastError = err;
-      console.warn(`[TTS] ✗ Attempt ${attempt}/2 failed: ${err.message}`);
-      // Clean up any partial file before retrying
-      try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (_) {}
-      if (attempt < 2) await new Promise(r => setTimeout(r, 600)); // brief pause
+      const durationMs = Date.now() - startedAt;
+      console.log(`[TTS] Generated ${filename} (${Math.round(stat.size / 1024)}KB) in ${durationMs}ms using ${voice}`);
+
+      return {
+        filename,
+        filePath: finalPath,
+        sizeBytes: stat.size,
+        durationMs,
+        voice,
+      };
+    } catch (error) {
+      lastError = error;
+      await fsp.rm(tmpPath, { force: true }).catch(() => {});
+      await fsp.rm(finalPath, { force: true }).catch(() => {});
+
+      console.warn(`[TTS] Attempt ${attempt}/2 failed: ${error.message}`);
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 350));
+      }
     }
   }
 
-  throw new Error(`TTS failed after 2 attempts: ${lastError?.message}`);
+  throw new Error(`Edge TTS failed after 2 attempts: ${lastError?.message || 'unknown error'}`);
 }
 
-// ── Quick smoke-test (used by GET /tts-test) ──────────────────────────────────
-
-/**
- * Run a short test synthesis to verify Edge TTS is reachable.
- * Returns { ok: true, ms, sizeKB } or throws with a descriptive message.
- */
 async function runSelfTest() {
-  const TEST_TEXT = 'Maya voice test. Edge TTS is working correctly.';
-  const filename  = `test_${uuidv4()}.mp3`;
-  const filePath  = path.join(TEMP_DIR, filename);
-  const t0        = Date.now();
+  const result = await textToSpeech('Maya voice test. Edge TTS is working correctly.');
+  await deleteFile(result.filename);
 
-  const tts = new MsEdgeTTS();
-  await tts.setMetadata(MAYA_VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
-  await tts.toFile(filePath, TEST_TEXT);
-
-  const ms     = Date.now() - t0;
-  const sizeKB = Math.round(fs.statSync(filePath).size / 1024);
-
-  // Clean up test file immediately
-  try { fs.unlinkSync(filePath); } catch (_) {}
-
-  return { ok: true, ms, sizeKB, voice: MAYA_VOICE };
+  return {
+    ok: true,
+    ms: result.durationMs,
+    sizeKB: Math.round(result.sizeBytes / 1024),
+    voice: result.voice,
+  };
 }
 
-// ── Cleanup ───────────────────────────────────────────────────────────────────
+async function cleanOldFiles() {
+  await fsp.mkdir(TEMP_DIR, { recursive: true });
 
-function cleanOldFiles() {
-  try {
-    const files = fs.readdirSync(TEMP_DIR);
-    const now   = Date.now();
-    let deleted = 0;
-    for (const file of files) {
-      // Only delete maya-generated files — never touch anything else in the dir
-      if (!file.startsWith('maya_') || !file.endsWith('.mp3')) continue;
-      try {
-        const fp = path.join(TEMP_DIR, file);
-        if (now - fs.statSync(fp).mtimeMs > MAX_AGE_MS) { fs.unlinkSync(fp); deleted++; }
-      } catch (_) {}
+  const now = Date.now();
+  const entries = await fsp.readdir(TEMP_DIR, { withFileTypes: true });
+  let deleted = 0;
+
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isFile() || !isGeneratedAudioFilename(entry.name)) return;
+
+    const filePath = path.join(TEMP_DIR, entry.name);
+
+    try {
+      const stat = await fsp.stat(filePath);
+      if (now - stat.mtimeMs > MAX_AGE_MS) {
+        await fsp.rm(filePath, { force: true });
+        deleted += 1;
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn(`[TTS] Cleanup skipped ${entry.name}: ${error.message}`);
+      }
     }
-    if (deleted > 0) console.log(`[TTS] 🧹 Cleaned ${deleted} old file(s)`);
-  } catch (err) {
-    console.error('[TTS] Cleanup error:', err.message);
+  }));
+
+  if (deleted > 0) {
+    console.log(`[TTS] Cleaned ${deleted} expired audio file(s)`);
+  }
+
+  return deleted;
+}
+
+async function deleteFile(filename) {
+  if (!isGeneratedAudioFilename(filename)) return false;
+
+  await fsp.rm(getAudioFilePath(filename), { force: true });
+  return true;
+}
+
+async function fileExists(filename) {
+  try {
+    await fsp.access(getAudioFilePath(filename), fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
-
-function deleteFile(filename) {
-  try {
-    const fp = path.join(TEMP_DIR, path.basename(filename));
-    if (fs.existsSync(fp)) fs.unlinkSync(fp);
-  } catch (_) {}
-}
-
-function fileExists(filename) {
-  return fs.existsSync(path.join(TEMP_DIR, path.basename(filename)));
-}
-
-// ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
-  textToSpeech,
-  runSelfTest,
+  DEFAULT_VOICE,
+  MAYA_VOICE,
+  SUPPORTED_VOICES,
+  TEMP_DIR,
+  MAX_AGE_MS,
+  TTS_TIMEOUT_MS,
   cleanOldFiles,
   deleteFile,
   fileExists,
+  getAudioFilePath,
+  isGeneratedAudioFilename,
   preprocessForTTS,
-  TEMP_DIR,
-  MAYA_VOICE,
+  runSelfTest,
+  textToSpeech,
 };

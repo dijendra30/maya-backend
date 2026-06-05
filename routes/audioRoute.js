@@ -1,93 +1,101 @@
-/**
- * ╔══════════════════════════════════════════════════════════════════╗
- *  Maya Audio Route — Phase 2
- *  Serves generated MP3 files to the Android app.
- *
- *  GET /audio/:filename
- *    → Streams the MP3 with correct headers.
- *    → 400 if filename is invalid / suspicious.
- *    → 404 if file doesn't exist (already cleaned up).
- *    → Supports Range requests (Android MediaPlayer needs this).
- * ╚══════════════════════════════════════════════════════════════════╝
- */
-
 const express = require('express');
-const router  = express.Router();
-const path    = require('path');
-const fs      = require('fs');
-const { TEMP_DIR, fileExists } = require('../services/TTSService');
+const fs = require('fs');
+const fsp = require('fs/promises');
+const {
+  getAudioFilePath,
+  isGeneratedAudioFilename,
+} = require('../services/TTSService');
 
-/**
- * GET /audio/:filename
- *
- * Streams a Maya-generated MP3 to the Android client.
- * Supports HTTP Range requests so Android MediaPlayer / ExoPlayer
- * can seek or resume partial downloads.
- */
-router.get('/audio/:filename', (req, res) => {
+const router = express.Router();
+
+function parseRange(rangeHeader, fileSize) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader || '');
+  if (!match) return null;
+
+  let start = match[1] === '' ? null : Number(match[1]);
+  let end = match[2] === '' ? null : Number(match[2]);
+
+  if (start === null && end === null) return null;
+
+  if (start === null) {
+    const suffixLength = end;
+    if (!Number.isInteger(suffixLength) || suffixLength <= 0) return null;
+    start = Math.max(fileSize - suffixLength, 0);
+    end = fileSize - 1;
+  } else {
+    if (!Number.isInteger(start) || start < 0) return null;
+    if (end === null) end = fileSize - 1;
+  }
+
+  if (!Number.isInteger(end) || end < start || start >= fileSize) return null;
+
+  return {
+    start,
+    end: Math.min(end, fileSize - 1),
+  };
+}
+
+router.get('/audio/:filename', async (req, res, next) => {
   const { filename } = req.params;
 
-  // ── Security: reject any path-traversal or non-MP3 attempts ────────────────
-  const safe = path.basename(filename); // strips leading ../ or ./
-  if (
-    safe !== filename ||           // original had path separators
-    !safe.startsWith('maya_') ||   // must be a Maya-generated file
-    !safe.endsWith('.mp3') ||      // must be MP3
-    safe.includes('..')            // double-check traversal
-  ) {
+  if (!isGeneratedAudioFilename(filename)) {
     return res.status(400).json({ error: 'Invalid audio filename' });
   }
 
-  const filePath = path.join(TEMP_DIR, safe);
+  let filePath;
+  let stat;
 
-  if (!fs.existsSync(filePath)) {
-    console.warn(`[Audio] 404 — file not found: ${safe}`);
-    return res.status(404).json({ error: 'Audio file not found or already expired' });
+  try {
+    filePath = getAudioFilePath(filename);
+    stat = await fsp.stat(filePath);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return res.status(404).json({ error: 'Audio file not found or expired' });
+    }
+    if (error.message === 'Invalid audio filename' || error.message === 'Invalid audio path') {
+      return res.status(400).json({ error: 'Invalid audio filename' });
+    }
+    return next(error);
   }
 
-  const stat     = fs.statSync(filePath);
   const fileSize = stat.size;
-  const rangeHeader = req.headers['range'];
+  const headers = {
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, max-age=300',
+    'Content-Type': 'audio/mpeg',
+  };
 
-  // ── Range request (Android ExoPlayer / MediaPlayer seeks) ──────────────────
-  if (rangeHeader) {
-    const parts  = rangeHeader.replace(/bytes=/, '').split('-');
-    const start  = parseInt(parts[0], 10);
-    const end    = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    const chunkSize = end - start + 1;
+  if (req.headers.range) {
+    const range = parseRange(req.headers.range, fileSize);
+    if (!range) {
+      return res
+        .status(416)
+        .set('Content-Range', `bytes */${fileSize}`)
+        .json({ error: 'Invalid range' });
+    }
 
+    const contentLength = range.end - range.start + 1;
     res.writeHead(206, {
-      'Content-Range':  `bytes ${start}-${end}/${fileSize}`,
-      'Accept-Ranges':  'bytes',
-      'Content-Length': chunkSize,
-      'Content-Type':   'audio/mpeg',
-      'Cache-Control':  'no-cache',
+      ...headers,
+      'Content-Length': contentLength,
+      'Content-Range': `bytes ${range.start}-${range.end}/${fileSize}`,
     });
 
-    fs.createReadStream(filePath, { start, end }).pipe(res);
-    return;
+    return fs
+      .createReadStream(filePath, { start: range.start, end: range.end })
+      .on('error', next)
+      .pipe(res);
   }
 
-  // ── Full file (first request from Android) ──────────────────────────────────
   res.writeHead(200, {
-    'Content-Type':   'audio/mpeg',
+    ...headers,
     'Content-Length': fileSize,
-    'Accept-Ranges':  'bytes',
-    'Cache-Control':  'no-cache',
   });
 
-  const stream = fs.createReadStream(filePath);
-
-  stream.on('error', (err) => {
-    console.error(`[Audio] Stream error for ${safe}:`, err.message);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to stream audio file' });
-    }
-  });
-
-  stream.pipe(res);
-
-  console.log(`[Audio] ▶ Streaming ${safe} (${Math.round(fileSize / 1024)}KB) to ${req.ip}`);
+  return fs
+    .createReadStream(filePath)
+    .on('error', next)
+    .pipe(res);
 });
 
 module.exports = router;
