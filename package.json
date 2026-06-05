@@ -4,8 +4,8 @@
   "description": "Maya AI Router - Phase 2 with Edge TTS neural voice",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "dependencies": {
     "axios": "^1.7.9",
