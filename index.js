@@ -1,5 +1,19 @@
 require('dotenv').config();
 
+// ── Startup validation — Google Auth ─────────────────────────────────────────
+if (!process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID === 'your_google_oauth_client_id_here') {
+  console.error('\n[STARTUP ERROR] GOOGLE_CLIENT_ID is not set in .env');
+  console.error('  1. Go to https://console.cloud.google.com → APIs & Services → Credentials');
+  console.error('  2. Find the OAuth 2.0 Web Client ID for project maya-76f01 (project number 820796088076)');
+  console.error('  3. Copy the client_id (ends with .apps.googleusercontent.com)');
+  console.error('  4. Set GOOGLE_CLIENT_ID=<that value> in your .env file');
+  console.error('  5. Set the same value in Android strings.xml google_web_client_id');
+  console.error('  6. Set the same value in google-services.json oauth_client[0].client_id\n');
+}
+if (!process.env.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET === 'your_google_oauth_client_secret_here') {
+  console.warn('[STARTUP WARN] GOOGLE_CLIENT_SECRET is not set — server-side OAuth flow (web redirect) will fail. ID token verify (Android) only needs GOOGLE_CLIENT_ID.');
+}
+
 const cors = require('cors');
 const express = require('express');
 const helmet = require('helmet');

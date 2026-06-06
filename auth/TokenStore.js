@@ -156,8 +156,13 @@ function getAuthStatus(userId) {
   for (const provider of providers) {
     const data = getToken(userId, provider);
     if (data && data.access_token) {
+      // Consider connected if: token not expired OR (has email and no refresh_token, meaning
+      // it's an Android verify session that will refresh on next app start)
+      const tokenExpired = Date.now() >= (data.expiry_time - 60_000);
+      const isAndroidSession = !data.refresh_token && data.email;
+      const connected = !tokenExpired || isAndroidSession;
       status[provider] = {
-        connected:    isAuthenticated(userId, provider),
+        connected,
         email:        data.email || null,
         last_used:    data.last_used || null,
         connected_at: data.connected_at || null,

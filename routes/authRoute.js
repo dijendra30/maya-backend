@@ -28,6 +28,72 @@ function getRedirectBase(req) {
   return process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
 }
 
+// ── POST /auth/google/verify ──────────────────────────────────────────────────
+// Receives an ID token from Android, verifies it with Google, and stores
+// the user session in TokenStore so /auth/status returns connected=true.
+// Uses a 24-hour expiry (Android ID tokens are refreshed on app restart via
+// silent sign-in, which calls verifyGoogleWithBackend again).
+
+router.post('/auth/google/verify', async (req, res) => {
+  const { idToken, accessToken, userId } = req.body || {};
+
+  if (!idToken || typeof idToken !== 'string') {
+    return res.status(400).json({ success: false, message: 'idToken is required' });
+  }
+
+  const resolvedUserId = (typeof userId === 'string' && userId.trim()) ? userId.trim() : 'default';
+
+  try {
+    // Verify the ID token via Google's public tokeninfo endpoint
+    const { data: tokenInfo } = await axios.get(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
+      { timeout: 10000 }
+    );
+
+    const { email, sub, aud, exp } = tokenInfo;
+
+    if (!email) {
+      return res.status(401).json({ success: false, message: 'Token contains no email' });
+    }
+
+    // Verify token has not expired
+    if (exp && Date.now() / 1000 > Number(exp)) {
+      return res.status(401).json({ success: false, message: 'ID token has expired' });
+    }
+
+    // Verify audience matches our Web Client ID
+    const expectedAud = process.env.GOOGLE_CLIENT_ID;
+    if (!expectedAud) {
+      console.error('[Auth/Verify] GOOGLE_CLIENT_ID not set in .env — cannot validate token audience. Set GOOGLE_CLIENT_ID to your Web OAuth Client ID.');
+      return res.status(500).json({ success: false, message: 'Server misconfiguration: GOOGLE_CLIENT_ID not set' });
+    }
+    if (aud !== expectedAud) {
+      console.error(`[Auth/Verify] aud mismatch: token=${aud} env=${expectedAud}`);
+      console.error('[Auth/Verify] Fix: GOOGLE_CLIENT_ID in .env must match strings.xml google_web_client_id in the Android app');
+      return res.status(401).json({ success: false, message: 'Token audience mismatch — check GOOGLE_CLIENT_ID in .env' });
+    }
+
+    // Store in TokenStore with 24-hour expiry.
+    // Android silent sign-in re-verifies on each app start, keeping session alive.
+    // The access token from the Android client is stored for Google API calls.
+    TokenStore.saveToken(resolvedUserId, 'google', {
+      access_token:  accessToken || idToken,
+      refresh_token: null,
+      expires_in:    86400,   // 24 hours — refreshed each app start via silent sign-in
+      email,
+      sub,
+    });
+
+    console.log(`[Auth/Verify] Google verified for user ${resolvedUserId} (${email})`);
+    return res.json({ success: true, email, message: 'Google account connected' });
+
+  } catch (err) {
+    const detail = err.response?.data?.error_description || err.response?.data?.error || err.message;
+    console.error('[Auth/Verify] Google ID token verification failed:', detail);
+    return res.status(401).json({ success: false, message: `Verification failed: ${detail}` });
+  }
+});
+
 // ── GET /auth/google ──────────────────────────────────────────────────────────
 
 router.get('/auth/google', (req, res) => {

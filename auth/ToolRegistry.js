@@ -1,13 +1,6 @@
 /**
  * Maya AI — Tool Registry
  * Centralized source-of-truth for every tool Maya can use.
- *
- * Each tool tracks:
- *   installed    – built into this Maya instance
- *   requiresAuth – needs OAuth before use
- *   authProvider – which OAuth provider (google | spotify | none)
- *   scopes       – OAuth permission scopes required
- *   description  – human-readable description
  */
 
 const TOOL_REGISTRY = {
@@ -52,15 +45,45 @@ const TOOL_REGISTRY = {
     description:  'Search and find YouTube videos.',
     icon:         '▶️',
   },
-  movies: {
-    id:           'movies',
-    label:        'Movie Search (TMDB)',
+  music: {
+    id:           'music',
+    label:        'Music',
     installed:    true,
     requiresAuth: false,
     authProvider: 'none',
     scopes:       [],
-    description:  'Search movies, TV shows, and entertainment info.',
-    icon:         '🎬',
+    description:  'Mood-based and artist music search. Opens Spotify, YouTube Music, or YouTube.',
+    icon:         '🎵',
+  },
+  air_quality: {
+    id:           'air_quality',
+    label:        'Air Quality',
+    installed:    true,
+    requiresAuth: false,
+    authProvider: 'none',
+    scopes:       [],
+    description:  'AQI levels and pollution data.',
+    icon:         '💨',
+  },
+  location: {
+    id:           'location',
+    label:        'Location',
+    installed:    true,
+    requiresAuth: false,
+    authProvider: 'none',
+    scopes:       [],
+    description:  'Reverse geocoding and nearby places search.',
+    icon:         '📍',
+  },
+  vision: {
+    id:           'vision',
+    label:        'Vision',
+    installed:    true,
+    requiresAuth: false,
+    authProvider: 'none',
+    scopes:       [],
+    description:  'Image analysis and OCR via Gemini Vision.',
+    icon:         '👁️',
   },
   maps: {
     id:           'maps',
@@ -72,15 +95,15 @@ const TOOL_REGISTRY = {
     description:  'Location lookup, nearby places, and directions.',
     icon:         '🗺️',
   },
-  air_quality: {
-    id:           'air_quality',
-    label:        'Air Quality',
+  movies: {
+    id:           'movies',
+    label:        'Movie Search (TMDB)',
     installed:    true,
     requiresAuth: false,
     authProvider: 'none',
     scopes:       [],
-    description:  'AQI levels and pollution data.',
-    icon:         '💨',
+    description:  'Search movies, TV shows, and entertainment info.',
+    icon:         '🎬',
   },
   timezone: {
     id:           'timezone',
@@ -170,44 +193,22 @@ const TOOL_REGISTRY = {
   },
 };
 
-/**
- * Get a single tool entry.
- * @param {string} toolId
- * @returns {object|null}
- */
 function getTool(toolId) {
   return TOOL_REGISTRY[toolId] || null;
 }
 
-/**
- * Get all tools.
- * @returns {object[]}
- */
 function getAllTools() {
   return Object.values(TOOL_REGISTRY);
 }
 
-/**
- * Get all tools for a given auth provider.
- * @param {string} provider – 'google' | 'spotify' | 'none'
- * @returns {object[]}
- */
 function getToolsByProvider(provider) {
   return getAllTools().filter(t => t.authProvider === provider);
 }
 
-/**
- * Get tools that require auth and match a provider.
- */
 function getAuthRequiredTools(provider = null) {
   return getAllTools().filter(t => t.requiresAuth && (!provider || t.authProvider === provider));
 }
 
-/**
- * Check if a tool requires authentication.
- * @param {string} toolId
- * @returns {boolean}
- */
 function requiresAuth(toolId) {
   const tool = getTool(toolId);
   return tool ? tool.requiresAuth : false;
