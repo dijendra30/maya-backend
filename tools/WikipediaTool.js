@@ -5,16 +5,16 @@
  * Returns a 2-3 sentence voice-ready summary.
  *
  * Strategy:
- *   1. Extract topic from the user's question
+ *   1. Extract topic from the user's question (strip question words, "the", articles)
  *   2. Hit /page/summary/{title} — fast, returns a clean extract
  *   3. On 404, fall back to OpenSearch to find the closest article
  */
 
 const axios = require('axios');
 
-const SUMMARY_URL   = 'https://en.wikipedia.org/api/rest_v1/page/summary';
+const SUMMARY_URL    = 'https://en.wikipedia.org/api/rest_v1/page/summary';
 const OPENSEARCH_URL = 'https://en.wikipedia.org/w/api.php';
-const UA_HEADER     = { 'User-Agent': 'MayaAI/4.0 (personal assistant; contact@maya.ai)' };
+const UA_HEADER      = { 'User-Agent': 'MayaAI/4.0 (personal assistant; contact@maya.ai)' };
 
 // ── Topic Extraction ────────────────────────────────────────────────────────
 
@@ -24,33 +24,36 @@ const EXTRACTION_PATTERNS = [
   /^(?:tell me about|explain|describe|information about|info about|facts about)\s+(.+?)(?:\s*\?|$)/i,
   /^(?:history of|biography of|origin of|about)\s+(.+?)(?:\s*\?|$)/i,
   /^(?:what do you know about|summarize)\s+(.+?)(?:\s*\?|$)/i,
-  // Hindi / Hinglish patterns
+  // Hindi / Hinglish
   /(.+?)\s+(?:kaun tha|kaun hai|kaun the|kya hai|kya tha)\s*\??$/i,
   /(.+?)\s+ke\s+(?:baare mein|bare mein)\s+(?:batao|bataiye)\s*\??$/i,
   /^(?:batao|bataiye|bataao)\s+(.+?)(?:\s*\?|$)/i,
 ];
 
-const STOP_SUFFIXES = /\s+(?:please|thanks|thank you|maya|bhai|yaar)$/i;
+const STOP_SUFFIXES  = /\s+(?:please|thanks|thank you|maya|bhai|yaar)$/i;
+const FILLER_PHRASES = /^(?:can you tell me|do you know|hey maya|maya|please tell me|i want to know)\s+/i;
 
-// Filler phrases to strip before extraction
-const FILLER_PHRASES = /^(?:can you tell me|tell me|do you know|hey maya|maya|please tell me|i want to know)\s+/i;
+// Leading articles and filler words to strip from the final topic
+const LEADING_ARTICLES = /^(?:the|a|an|some|this|that|these|those)\s+/i;
 
 function extractTopic(message) {
-  // Step 1: remove trailing politeness
   let clean = message.replace(STOP_SUFFIXES, '').trim();
-  // Step 2: remove leading filler phrases (try up to 2 rounds)
   clean = clean.replace(FILLER_PHRASES, '').trim();
   clean = clean.replace(FILLER_PHRASES, '').trim();
+  // Strip orphaned "about" left after filler removal
+  clean = clean.replace(/^about\s+/i, '').trim();
 
   for (const re of EXTRACTION_PATTERNS) {
     const m = clean.match(re);
     if (m) {
-      const topic = m[1].trim().replace(STOP_SUFFIXES, '');
+      let topic = m[1].trim().replace(STOP_SUFFIXES, '');
+      // Strip leading articles from extracted topic: "the Prime Minister" → "Prime Minister"
+      topic = topic.replace(LEADING_ARTICLES, '').trim();
       if (topic.length > 1) return topic;
     }
   }
-  // Last resort: strip question mark and use the whole message
-  return clean.replace(/\?$/, '').trim();
+  // Last resort: strip question mark and leading articles, use the whole message
+  return clean.replace(/\?$/, '').replace(LEADING_ARTICLES, '').trim();
 }
 
 // ── Summary Trimmer ─────────────────────────────────────────────────────────
@@ -78,7 +81,7 @@ async function openSearch(query) {
     timeout: 6000,
     headers: UA_HEADER,
   });
-  return data[1]?.[0] || null; // first suggested title
+  return data[1]?.[0] || null;
 }
 
 // ── Main Fetch ──────────────────────────────────────────────────────────────
@@ -112,7 +115,6 @@ async function fetch(message) {
 
   } catch (err) {
     if (err.response?.status === 404) {
-      // Try OpenSearch fallback
       try {
         const bestMatch = await openSearch(topic);
         if (bestMatch) {

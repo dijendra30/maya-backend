@@ -89,16 +89,22 @@ async function createEvent(message, googleToken) {
   end.setHours(end.getHours() + 1);
 
   try {
-    await axios.post(CAL_EVENTS, {
+    const { data } = await axios.post(CAL_EVENTS, {
       summary: title,
       start:   { dateTime: start.toISOString() },
       end:     { dateTime: end.toISOString() },
     }, { headers: authHeader(googleToken), timeout: 10000 });
 
+    // Verify the event was actually created (Google returns the new event with an id)
+    if (!data || !data.id) {
+      return { reply: `I sent the request but could not confirm the event was created. Please check your calendar.`, toolUsed: 'calendar', toolFailed: true };
+    }
+
     const timeStr = start.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
     return {
       reply:    `Done! "${title}" has been added to your calendar at ${timeStr}.`,
       toolUsed: 'calendar',
+      toolVerified: true,
     };
   } catch (err) {
     if (err.response?.status === 401) return { reply: 'Calendar access expired. Please sign in again.', toolUsed: 'calendar' };

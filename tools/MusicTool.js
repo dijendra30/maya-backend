@@ -59,22 +59,22 @@ async function fetch(message) {
   const mood = detectMood(lower);
   if (mood) {
     const playlist = MOOD_PLAYLISTS[mood];
-    const url      = buildYouTubeUrl(playlist);
+    const query    = playlist.replace(/\+/g, ' ');
     const moodName = mood.charAt(0).toUpperCase() + mood.slice(1);
     return {
       reply:       `Opening ${moodName} playlist for you.`,
       toolUsed:    'music',
-      phoneAction: { type: 'OPEN_URL', url },
+      // OPEN_MUSIC lets Android choose Spotify → YouTube Music → YouTube app → browser
+      phoneAction: { type: 'OPEN_MUSIC', query },
     };
   }
 
   // 2. Artist / genre search — "play Arijit Singh", "play lofi music"
   const query = buildSearchQuery(message);
-  const url   = buildYouTubeUrl(query);
   return {
-    reply:       `Opening ${query.replace(/\+/g, ' ')} on YouTube.`,
+    reply:       `Playing ${query.replace(/\+/g, ' ')} for you.`,
     toolUsed:    'music',
-    phoneAction: { type: 'OPEN_URL', url },
+    phoneAction: { type: 'OPEN_MUSIC', query: query.replace(/\+/g, ' ') },
   };
 }
 

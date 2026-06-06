@@ -2,11 +2,16 @@
  * Weather Tool — Maya Phase 4
  *
  * Uses OpenWeatherMap API (current + 5-day/3-hour forecast).
- * Returns a voice-ready reply directly — no LLM needed for data queries.
+ * Returns a voice-ready reply directly.
  *
- * Env vars required:
+ * Env vars:
  *   OPENWEATHER_API_KEY  — https://openweathermap.org/api
  *   DEFAULT_CITY         — fallback city when none extracted (default: Raipur)
+ *
+ * City extraction priority:
+ *   1. City explicitly named in message ("weather in Delhi")
+ *   2. location param (device city from GPS/geocoding)
+ *   3. DEFAULT_CITY env var
  */
 
 const axios = require('axios');
@@ -16,15 +21,14 @@ const OWM_FORECAST = 'https://api.openweathermap.org/data/2.5/forecast';
 
 // ── City Extraction ─────────────────────────────────────────────────────────
 
-/**
- * Try to pull a city name from the message.
- * Falls back to the location field, then to DEFAULT_CITY env.
- */
 function extractCity(message, location) {
   const stopWords = ['today', 'tomorrow', 'tonight', 'the', 'my', 'now', 'outside', 'like'];
 
-  // Pattern 1: "weather in Port Blair", "forecast for New Delhi", "temperature at Pune"
-  const inMatch = message.match(/\b(?:in|at|for|of)\s+([A-Za-z][A-Za-z\s]{1,30}?)(?:\s*[\?\.]|\s+(?:today|tomorrow|tonight|this week|right now|now|please|$))/i);
+  // Pattern 1: "weather in Delhi", "forecast for Port Blair", "temperature at Pune"
+  // Terminators include weather keywords so "weather in Delhi temperature" works.
+  const inMatch = message.match(
+    /\b(?:in|at|for|of)\s+([A-Za-z][A-Za-z\s]{1,30}?)(?:\s*[?.]|\s+(?:today|tomorrow|tonight|this week|right now|now|please|weather|temperature|forecast|mausam)|$)/i
+  );
   if (inMatch) {
     const candidate = inMatch[1].trim();
     if (!stopWords.includes(candidate.toLowerCase())) return candidate;
@@ -44,7 +48,8 @@ function extractCity(message, location) {
     if (!stopWords.includes(candidate.toLowerCase())) return candidate;
   }
 
-  if (location && location.length > 1) return location;
+  // Fallback: GPS-derived location from device, then env default
+  if (location && location.trim().length > 1) return location.trim();
   return process.env.DEFAULT_CITY || 'Raipur';
 }
 
@@ -59,11 +64,11 @@ function formatWind(speedMs) {
 }
 
 function formatTime(unixTs, offsetSec) {
-  const d = new Date((unixTs + offsetSec) * 1000);
-  const h = d.getUTCHours();
-  const m = d.getUTCMinutes().toString().padStart(2, '0');
+  const d    = new Date((unixTs + offsetSec) * 1000);
+  const h    = d.getUTCHours();
+  const m    = d.getUTCMinutes().toString().padStart(2, '0');
   const ampm = h < 12 ? 'AM' : 'PM';
-  const h12 = h % 12 || 12;
+  const h12  = h % 12 || 12;
   return `${h12}:${m} ${ampm}`;
 }
 
@@ -78,7 +83,7 @@ async function fetchCurrent(message, location) {
     };
   }
 
-  const city = extractCity(message, location);
+  const city  = extractCity(message, location);
   const lower = message.toLowerCase();
 
   try {
@@ -87,16 +92,15 @@ async function fetchCurrent(message, location) {
       timeout: 8000,
     });
 
-    const temp    = Math.round(data.main.temp);
-    const feels   = Math.round(data.main.feels_like);
-    const hum     = data.main.humidity;
-    const desc    = data.weather[0].description;
-    const wind    = formatWind(data.wind.speed);
-    const name    = data.name;
-    const isRain  = /rain|drizzle|shower|thunder/i.test(desc);
-    const offset  = data.timezone;
+    const temp   = Math.round(data.main.temp);
+    const feels  = Math.round(data.main.feels_like);
+    const hum    = data.main.humidity;
+    const desc   = data.weather[0].description;
+    const wind   = formatWind(data.wind.speed);
+    const name   = data.name;
+    const isRain = /rain|drizzle|shower|thunder/i.test(desc);
+    const offset = data.timezone;
 
-    // Intent-specific replies
     if (/rain|umbrella|shower|wet/i.test(lower)) {
       return {
         reply: isRain
@@ -138,7 +142,6 @@ async function fetchCurrent(message, location) {
       return { reply: `Sunset in ${name} is at ${ss} today.`, toolUsed: 'weather' };
     }
 
-    // General weather
     return {
       reply: `In ${name}, it is ${temp}°C right now, ${desc}. Feels like ${feels}°C, humidity ${hum}%, with ${wind}.`,
       toolUsed: 'weather',
@@ -171,15 +174,14 @@ async function fetchForecast(message, location) {
 
   try {
     const { data } = await axios.get(OWM_FORECAST, {
-      params: { q: city, appid: apiKey, units: 'metric', cnt: 16 }, // ~2 days
+      params: { q: city, appid: apiKey, units: 'metric', cnt: 16 },
       timeout: 8000,
     });
 
     const cityName = data.city.name;
     const list     = data.list;
 
-    // Determine target day
-    const now       = new Date();
+    const now = new Date();
     let targetDate;
 
     if (/tonight/i.test(lower)) {
@@ -194,9 +196,9 @@ async function fetchForecast(message, location) {
     const daySlots = list.filter(f => f.dt_txt.startsWith(targetDate));
     const slots    = daySlots.length > 0 ? daySlots : list.slice(0, 4);
 
-    const maxT   = Math.round(Math.max(...slots.map(f => f.main.temp_max)));
-    const minT   = Math.round(Math.min(...slots.map(f => f.main.temp_min)));
-    const descs  = [...new Set(slots.map(f => f.weather[0].description))];
+    const maxT    = Math.round(Math.max(...slots.map(f => f.main.temp_max)));
+    const minT    = Math.round(Math.min(...slots.map(f => f.main.temp_min)));
+    const descs   = [...new Set(slots.map(f => f.weather[0].description))];
     const hasRain = descs.some(d => /rain|drizzle|shower|thunder/i.test(d));
 
     const when = /tonight/i.test(lower) ? 'tonight' : /tomorrow/i.test(lower) ? 'tomorrow' : 'today';

@@ -1,30 +1,33 @@
 /**
- * Maya AI Tool Router — Phase 5 (Tool Permission Layer)
- *
- * All tools now pass through PermissionGuard before execution.
- * Auth-required tools return a structured auth prompt if not connected.
+ * Maya AI Tool Router — Phase 4/5
  *
  * Priority order (checked top-to-bottom):
  *   vision > calendar > tasks > gmail > drive >
  *   air_quality > weather > music > news > location > youtube > wikipedia
+ *
+ * Rule-based detection runs first; LLM fallback only when confidence is low.
+ * Tier 3 is NOT implemented.
  */
 
-const WeatherTool    = require('../tools/WeatherTool');
-const NewsTool       = require('../tools/NewsTool');
-const WikipediaTool  = require('../tools/WikipediaTool');
-const YouTubeTool    = require('../tools/YouTubeTool');
-const AirQualityTool = require('../tools/AirQualityTool');
-const MusicTool      = require('../tools/MusicTool');
-const LocationTool   = require('../tools/LocationTool');
-const VisionTool     = require('../tools/VisionTool');
-const CalendarTool   = require('../tools/CalendarTool');
-const TasksTool      = require('../tools/TasksTool');
-const GmailTool      = require('../tools/GmailTool');
-const DriveTool      = require('../tools/DriveTool');
+const WeatherTool     = require('../tools/WeatherTool');
+const NewsTool        = require('../tools/NewsTool');
+const WikipediaTool   = require('../tools/WikipediaTool');
+const YouTubeTool     = require('../tools/YouTubeTool');
+const AirQualityTool  = require('../tools/AirQualityTool');
+const MusicTool       = require('../tools/MusicTool');
+const LocationTool    = require('../tools/LocationTool');
+const VisionTool      = require('../tools/VisionTool');
+const CalendarTool    = require('../tools/CalendarTool');
+const TasksTool       = require('../tools/TasksTool');
+const GmailTool       = require('../tools/GmailTool');
+const DriveTool       = require('../tools/DriveTool');
 const PermissionGuard = require('../auth/PermissionGuard');
 const IntentClassifier = require('./IntentClassifier');
 
 // ── Trigger Tables ──────────────────────────────────────────────────────────
+// NOTE: Do NOT add "open music", "open settings", "open maps" etc. here.
+//       Those are handled locally on Android by PhoneActionDetector before
+//       the message ever reaches the backend.
 
 const TRIGGERS = {
   vision: [
@@ -66,16 +69,19 @@ const TRIGGERS = {
     'weather', 'temperature', 'rain', 'forecast', 'humid', 'umbrella',
     'sunny', 'cloudy', 'raining', 'storm', 'wind speed',
     'hot outside', 'cold outside', 'will it rain', 'how hot', 'how cold',
-    'sunrise', 'sunset', 'outside today', 'mausam', 'barish', 'baarish', 'garmi', 'thand', 'dhoop', 'chhata', 'mausam kaisa',
+    'sunrise', 'sunset', 'outside today',
+    'mausam', 'barish', 'baarish', 'garmi', 'thand', 'dhoop', 'chhata', 'mausam kaisa',
   ],
   music: [
     'i feel sad', 'i am sad', "i'm sad", 'feeling sad', 'feeling happy',
     'i feel happy', 'feeling low', 'need music', 'play music',
+    'play songs', 'play some songs', 'play some music', 'some music',
+    'start music',
     'study music', 'workout music', 'gym music', 'chill music', 'lofi',
     'feeling relaxed', 'i feel relaxed', 'motivational music',
     'romantic music', 'songs for', 'playlist for',
-    'play songs', 'play some songs', 'arijit singh', 'play bollywood',
-    'gaana bajao', 'gaane sunao', 'sangeet', 'gana play karo',
+    'arijit singh', 'play bollywood',
+    'gaana bajao', 'gaane sunao', 'sangeet', 'gana play karo', 'music bajao',
   ],
   news: [
     'news', 'headlines', 'latest news', "what's happening",
@@ -98,11 +104,11 @@ const TRIGGERS = {
     'who is ', 'who was ', 'what is ', 'what are ', 'tell me about ',
     'explain ', 'history of ', 'biography of ', 'facts about ',
     'information about ', 'when was ', 'how does ', 'origin of ',
-    'who invented ', 'who discovered ', 'kaun hai', 'kaun tha', 'kya hai', 'batao', 'itihas',
+    'who invented ', 'who discovered ',
+    'kaun hai', 'kaun tha', 'kya hai', 'batao', 'itihas',
   ],
 };
 
-// "What can you access?" triggers
 const CAPABILITY_QUERIES = [
   'what can you access', 'what tools do you have', 'what are you connected to',
   'what accounts are connected', 'what do you have access to',
@@ -121,7 +127,7 @@ const SELF_QUESTIONS = [
   'your features', 'introduce yourself', 'tumhara naam', 'tum kaun ho', 'kya kar sakti ho',
 ];
 
-// ── Detector ─────────────────────────────────────────────────────────────────
+// ── Tier 1: Rule-based Detection ─────────────────────────────────────────────
 
 function detectToolByKeywords(message, hasImage) {
   const lower = message.toLowerCase();
@@ -134,54 +140,53 @@ function detectToolByKeywords(message, hasImage) {
   return null;
 }
 
+// ── Tier 2: LLM Fallback (only when Tier 1 is inconclusive) ─────────────────
+
 async function detectTool(message, hasImage) {
-  // 1. Keyword matching (fast)
   const keywordTool = detectToolByKeywords(message, hasImage);
   if (keywordTool) return keywordTool;
-  
-  // 2. Hybrid LLM intent detection (slower, but catches nuanced queries)
+
+  // LLM fallback — 2s timeout, cached
   const llmTool = await IntentClassifier.classify(message);
   if (llmTool) return llmTool;
-  
+
   return null;
 }
 
 // ── Capability Query Handler ─────────────────────────────────────────────────
 
 function buildCapabilityReply(userId, authStatus) {
-  const ToolRegistry = require('../auth/ToolRegistry');
-  const allTools = ToolRegistry.getAllTools();
+  const ToolRegistry  = require('../auth/ToolRegistry');
+  const allTools      = ToolRegistry.getAllTools();
+  const publicTools   = allTools.filter(t => !t.requiresAuth).map(t => t.label);
+  const googleTools   = allTools.filter(t => t.authProvider === 'google').map(t => t.label);
 
-  const publicTools = allTools.filter(t => !t.requiresAuth).map(t => t.label);
-  const googleConnected = authStatus?.google?.connected;
+  const googleConnected  = authStatus?.google?.connected;
   const spotifyConnected = authStatus?.spotify?.connected;
 
-  const googleTools = allTools.filter(t => t.authProvider === 'google').map(t => t.label);
-  const spotifyTools = allTools.filter(t => t.authProvider === 'spotify').map(t => t.label);
-
   let reply = `Here's what I can access right now:\n\n`;
-  reply += `✅ Always available: ${publicTools.join(', ')}.\n\n`;
+  reply += `Always available: ${publicTools.join(', ')}.\n\n`;
 
   if (googleConnected) {
-    reply += `✅ Google account connected (${authStatus.google.email || 'linked'}): ${googleTools.join(', ')}.\n\n`;
+    reply += `Google account connected (${authStatus.google.email || 'linked'}): ${googleTools.join(', ')}.\n\n`;
   } else {
-    reply += `🔒 Google tools locked (${googleTools.join(', ')}) — connect your Google account to enable these.\n\n`;
+    reply += `Google tools locked (${googleTools.join(', ')}) — connect your Google account to enable these.\n\n`;
   }
 
   if (spotifyConnected) {
-    reply += `✅ Spotify connected: Spotify Access.\n\n`;
+    reply += `Spotify connected: Spotify Access.\n\n`;
   } else {
-    reply += `🔒 Spotify not connected — connect your Spotify account to enable music control.\n\n`;
+    reply += `Spotify not connected — connect to enable music control.\n\n`;
   }
 
-  reply += `I only claim access to tools you've explicitly authorized. I never access your accounts without permission.`;
+  reply += `I only access tools you have explicitly authorized.`;
   return reply;
 }
 
-// ── Executor ──────────────────────────────────────────────────────────────────
+// ── Tool Executor ─────────────────────────────────────────────────────────────
 
 async function executeTool(toolName, message, location, options) {
-  const { googleToken, latitude, longitude, imageBase64 } = options;
+  const { latitude, longitude, imageBase64 } = options;
   switch (toolName) {
     case 'vision':      return VisionTool.analyze(message, imageBase64);
     case 'calendar':    return CalendarTool.fetch(message, options._resolvedToken);
@@ -199,32 +204,33 @@ async function executeTool(toolName, message, location, options) {
   }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ── Main Router ───────────────────────────────────────────────────────────────
 
 async function route(message, location = '', options = {}) {
   const hasImage = !!(options.imageBase64);
   const toolName = await detectTool(message, hasImage);
   if (!toolName) return null;
 
-  // Handle capability query inline
+  // Capability query — no tool execution, just status reply
   if (toolName === 'capability_query') {
     const TokenStore = require('../auth/TokenStore');
-    const userId = options.userId || 'default';
+    const userId     = options.userId || 'default';
     const authStatus = TokenStore.getAuthStatus(userId);
     return {
-      reply:    buildCapabilityReply(userId, authStatus),
-      toolUsed: 'capability_query',
+      reply:        buildCapabilityReply(userId, authStatus),
+      toolUsed:     'capability_query',
+      toolVerified: true,
     };
   }
 
   const userId = options.userId || 'default';
-  console.log(`[ToolRouter] ${toolName} | user: ${userId} | loc: ${location || '-'} | auth: ${options.googleToken ? 'client-token' : 'check-server'} | img: ${hasImage}`);
+  console.log(`[ToolRouter] ${toolName} | user=${userId} | loc=${location || '-'} | clientToken=${!!options.googleToken} | img=${hasImage}`);
 
-  // ── Permission Check ────────────────────────────────────────────────────────
+  // ── Permission check (Tier 1: server token → Tier 2: client token → block) ──
   const permission = await PermissionGuard.guard(toolName, userId, options.googleToken || null);
 
   if (!permission.allowed) {
-    console.log(`[ToolRouter] ✗ ${toolName} blocked — ${permission.reason} for user ${userId}`);
+    console.log(`[ToolRouter] ✗ ${toolName} blocked (${permission.reason}) for user ${userId}`);
     return {
       reply:         permission.message,
       toolUsed:      toolName,
@@ -232,36 +238,40 @@ async function route(message, location = '', options = {}) {
       authProvider:  permission.provider,
       connectAction: permission.connectAction,
       toolFailed:    false,
+      toolVerified:  false,
     };
   }
 
-  // Inject resolved token
+  // Inject the resolved token (server-side or client-passed)
   options._resolvedToken = permission.token;
 
   try {
     const result = await executeTool(toolName, message, location, options);
-    
-    // Tool execution verification
+
+    // Verify tool returned real data before replying
     if (!result || !result.reply) {
+      console.error(`[ToolRouter] ✗ ${toolName} returned empty result`);
       return {
-        reply: `I tried to use the ${toolName} tool but it didn't work.`,
-        toolUsed: toolName,
-        toolFailed: true,
-        toolVerified: false
+        reply:        `I tried to use the ${toolName} tool but it returned no data.`,
+        toolUsed:     toolName,
+        toolFailed:   true,
+        toolVerified: false,
       };
     }
-    
+
+    // Mark as verified — real data was retrieved
     result.toolVerified = true;
     return result;
+
   } catch (err) {
-    console.error(`[ToolRouter] ✗ ${toolName}: ${err.message}`);
+    console.error(`[ToolRouter] ✗ ${toolName} threw: ${err.message}`);
     const is401 = err.response?.status === 401 || err.message?.includes('401');
     return {
       reply: is401
         ? `My access to your ${permission.toolLabel} has expired. Please reconnect your ${permission.provider} account.`
-        : `I tried the ${toolName} tool but hit an issue. Let me answer from what I know.`,
-      toolUsed:   toolName,
-      toolFailed: true,
+        : `I tried the ${toolName} tool but hit an error. Let me answer from what I know instead.`,
+      toolUsed:     toolName,
+      toolFailed:   true,
       toolVerified: false,
       ...(is401 ? {
         authRequired:  true,
