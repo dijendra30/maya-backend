@@ -24,12 +24,24 @@ const EXTRACTION_PATTERNS = [
   /^(?:tell me about|explain|describe|information about|info about|facts about)\s+(.+?)(?:\s*\?|$)/i,
   /^(?:history of|biography of|origin of|about)\s+(.+?)(?:\s*\?|$)/i,
   /^(?:what do you know about|summarize)\s+(.+?)(?:\s*\?|$)/i,
+  // Hindi / Hinglish patterns
+  /(.+?)\s+(?:kaun tha|kaun hai|kaun the|kya hai|kya tha)\s*\??$/i,
+  /(.+?)\s+ke\s+(?:baare mein|bare mein)\s+(?:batao|bataiye)\s*\??$/i,
+  /^(?:batao|bataiye|bataao)\s+(.+?)(?:\s*\?|$)/i,
 ];
 
-const STOP_SUFFIXES = /\s+(?:please|thanks|thank you|maya)$/i;
+const STOP_SUFFIXES = /\s+(?:please|thanks|thank you|maya|bhai|yaar)$/i;
+
+// Filler phrases to strip before extraction
+const FILLER_PHRASES = /^(?:can you tell me|tell me|do you know|hey maya|maya|please tell me|i want to know)\s+/i;
 
 function extractTopic(message) {
-  const clean = message.replace(STOP_SUFFIXES, '').trim();
+  // Step 1: remove trailing politeness
+  let clean = message.replace(STOP_SUFFIXES, '').trim();
+  // Step 2: remove leading filler phrases (try up to 2 rounds)
+  clean = clean.replace(FILLER_PHRASES, '').trim();
+  clean = clean.replace(FILLER_PHRASES, '').trim();
+
   for (const re of EXTRACTION_PATTERNS) {
     const m = clean.match(re);
     if (m) {

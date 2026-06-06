@@ -21,13 +21,29 @@ const OWM_FORECAST = 'https://api.openweathermap.org/data/2.5/forecast';
  * Falls back to the location field, then to DEFAULT_CITY env.
  */
 function extractCity(message, location) {
-  // "weather in Mumbai", "forecast for Delhi", "temperature at Pune"
-  const inMatch = message.match(/\b(?:in|at|for)\s+([A-Za-z\s]{2,30}?)(?:\s*\?|today|tomorrow|tonight|$)/i);
+  const stopWords = ['today', 'tomorrow', 'tonight', 'the', 'my', 'now', 'outside', 'like'];
+
+  // Pattern 1: "weather in Port Blair", "forecast for New Delhi", "temperature at Pune"
+  const inMatch = message.match(/\b(?:in|at|for|of)\s+([A-Za-z][A-Za-z\s]{1,30}?)(?:\s*[\?\.]|\s+(?:today|tomorrow|tonight|this week|right now|now|please|$))/i);
   if (inMatch) {
     const candidate = inMatch[1].trim();
-    const stopWords = ['today', 'tomorrow', 'tonight', 'the', 'my', 'now', 'outside', 'like'];
     if (!stopWords.includes(candidate.toLowerCase())) return candidate;
   }
+
+  // Pattern 2: "Port Blair weather", "New Delhi temperature"
+  const prefixMatch = message.match(/^([A-Za-z][A-Za-z\s]{1,25}?)\s+(?:weather|temperature|forecast|mausam)/i);
+  if (prefixMatch) {
+    const candidate = prefixMatch[1].trim();
+    if (!stopWords.includes(candidate.toLowerCase())) return candidate;
+  }
+
+  // Pattern 3: Hindi — "Delhi ka mausam", "Mumbai mein barish"
+  const hindiMatch = message.match(/([A-Za-z][A-Za-z\s]{1,25}?)\s+(?:ka mausam|ki garmi|ki thand|mein barish)/i);
+  if (hindiMatch) {
+    const candidate = hindiMatch[1].trim();
+    if (!stopWords.includes(candidate.toLowerCase())) return candidate;
+  }
+
   if (location && location.length > 1) return location;
   return process.env.DEFAULT_CITY || 'Raipur';
 }

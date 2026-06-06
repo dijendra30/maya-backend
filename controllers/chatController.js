@@ -12,9 +12,10 @@ async function handleChat(req, res) {
   const {
     message, voice, context,
     location,                   // Phase 4: city name
-    googleToken,                // Phase 4: Google OAuth token
+    googleToken,                // Phase 4: Google OAuth token (legacy / client-direct path)
     latitude, longitude,        // Phase 4: GPS coordinates
     imageBase64,                // Phase 4: Vision — base64 image
+    userId,                     // Phase 5: user identifier for server-side token lookup
   } = req.body || {};
 
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -24,25 +25,43 @@ async function handleChat(req, res) {
   const trimmed      = message.trim();
   const memCtx       = typeof context === 'string' ? context.trim() : '';
   const userLocation = typeof location === 'string' ? location.trim() : '';
+  const resolvedUser = typeof userId === 'string' && userId.trim() ? userId.trim() : 'default';
   const t0           = Date.now();
 
   try {
     const t1 = Date.now();
-    let reply, provider, phoneAction = null;
+    let reply, provider, phoneAction = null, authRequired = false, connectAction = null;
+    let toolVerified = false;
 
     const toolResult = await ToolRouterService.route(trimmed, userLocation, {
+      userId:      resolvedUser,
       googleToken: googleToken || null,
-      latitude:    latitude   != null ? parseFloat(latitude)   : null,
-      longitude:   longitude  != null ? parseFloat(longitude)  : null,
+      latitude:    latitude  != null ? parseFloat(latitude)  : null,
+      longitude:   longitude != null ? parseFloat(longitude) : null,
       imageBase64: imageBase64 || null,
     });
 
-    if (toolResult && !toolResult.toolFailed) {
-      reply       = toolResult.reply;
-      provider    = toolResult.toolUsed;
-      phoneAction = toolResult.phoneAction || null;
+    if (toolResult) {
+      // Auth-blocked — return prompt + connect action without AI fallback
+      if (toolResult.authRequired) {
+        reply         = toolResult.reply;
+        provider      = toolResult.toolUsed;
+        authRequired  = true;
+        connectAction = toolResult.connectAction || null;
+        phoneAction   = null;
+      } else if (!toolResult.toolFailed) {
+        reply       = toolResult.reply;
+        provider    = toolResult.toolUsed;
+        phoneAction = toolResult.phoneAction || null;
+        toolVerified = toolResult.toolVerified || false;
+      } else {
+        // Tool failed — fall back to AI
+        console.log(`[Chat] Tool failed for ${toolResult.toolUsed}, using AI`);
+        const ai = await RouterService.route(trimmed, memCtx);
+        reply    = ai.reply;
+        provider = ai.provider;
+      }
     } else {
-      if (toolResult?.toolFailed) console.log(`[Chat] Tool failed for ${toolResult.toolUsed}, using AI`);
       const ai = await RouterService.route(trimmed, memCtx);
       reply    = ai.reply;
       provider = ai.provider;
@@ -61,9 +80,12 @@ async function handleChat(req, res) {
 
     return res.json({
       reply, provider, audioUrl,
-      voice:           audio?.voice || TTSService.MAYA_VOICE,
+      voice:            audio?.voice || TTSService.MAYA_VOICE,
       phoneAction,
-      timings:         { aiMs, ttsMs: audio?.durationMs || null, totalMs: Date.now() - t0 },
+      toolVerified,
+      authRequired:     authRequired || undefined,
+      connectAction:    connectAction || undefined,
+      timings:          { aiMs, ttsMs: audio?.durationMs || null, totalMs: Date.now() - t0 },
       hasMemoryContext: memCtx.length > 0,
       ...(ttsError ? { ttsError } : {}),
     });
