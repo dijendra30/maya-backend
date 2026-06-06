@@ -63,6 +63,7 @@ app.get('/health', (req, res) => {
       endpoints: [
         'GET  /auth/google',
         'GET  /auth/google/callback',
+        'POST /auth/google/verify',
         'GET  /auth/spotify',
         'GET  /auth/spotify/callback',
         'GET  /auth/status?userId=xxx',

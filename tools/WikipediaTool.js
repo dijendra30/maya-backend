@@ -31,7 +31,10 @@ const EXTRACTION_PATTERNS = [
 ];
 
 const STOP_SUFFIXES  = /\s+(?:please|thanks|thank you|maya|bhai|yaar)$/i;
-const FILLER_PHRASES = /^(?:can you tell me|do you know|hey maya|maya|please tell me|i want to know)\s+/i;
+// "tell me" is included with a negative lookahead so:
+//   "tell me about X"   → NOT stripped (pattern 2 matches it directly)
+//   "tell me who is X"  → stripped to "who is X" (pattern 0 matches)
+const FILLER_PHRASES = /^(?:can you tell me|tell me(?!\s+about)|do you know|hey maya|maya|please tell me|i want to know)\s+/i;
 
 // Leading articles and filler words to strip from the final topic
 const LEADING_ARTICLES = /^(?:the|a|an|some|this|that|these|those)\s+/i;
