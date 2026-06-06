@@ -1,75 +1,75 @@
-const RouterService = require('../services/RouterService');
-const TTSService = require('../services/TTSService');
-
-/**
- * Maya Phase 3 — Chat Controller
- *
- * Changes from Phase 2:
- *   • Accepts `context` field from request body
- *   • Forwards context to RouterService.route(message, context)
- *   • Context is the full memory block assembled by MemoryManager on the device
- */
+const RouterService     = require('../services/RouterService');
+const ToolRouterService = require('../services/ToolRouterService');
+const TTSService        = require('../services/TTSService');
 
 function getServerUrl(req) {
-  const configured = process.env.SERVER_URL;
-  if (configured) return configured.replace(/\/+$/, '');
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.get('host');
-  return `${protocol}://${host}`;
+  const c = process.env.SERVER_URL;
+  if (c) return c.replace(/\/+$/, '');
+  return `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}`;
 }
 
 async function handleChat(req, res) {
-  const { message, voice, context } = req.body || {};
+  const {
+    message, voice, context,
+    location,                   // Phase 4: city name
+    googleToken,                // Phase 4: Google OAuth token
+    latitude, longitude,        // Phase 4: GPS coordinates
+    imageBase64,                // Phase 4: Vision — base64 image
+  } = req.body || {};
 
-  if (!message || typeof message !== 'string' || message.trim().length === 0) {
-    return res.status(400).json({ error: 'message is required and must be a non-empty string' });
+  if (!message || typeof message !== 'string' || !message.trim()) {
+    return res.status(400).json({ error: 'message is required' });
   }
 
-  const trimmed   = message.trim();
-  const memCtx    = typeof context === 'string' ? context.trim() : '';
-  const requestStartedAt = Date.now();
+  const trimmed      = message.trim();
+  const memCtx       = typeof context === 'string' ? context.trim() : '';
+  const userLocation = typeof location === 'string' ? location.trim() : '';
+  const t0           = Date.now();
 
   try {
-    const aiStartedAt = Date.now();
+    const t1 = Date.now();
+    let reply, provider, phoneAction = null;
 
-    // Phase 3: pass memory context to router → provider → system prompt
-    const { reply, provider } = await RouterService.route(trimmed, memCtx);
+    const toolResult = await ToolRouterService.route(trimmed, userLocation, {
+      googleToken: googleToken || null,
+      latitude:    latitude   != null ? parseFloat(latitude)   : null,
+      longitude:   longitude  != null ? parseFloat(longitude)  : null,
+      imageBase64: imageBase64 || null,
+    });
 
-    const aiDurationMs = Date.now() - aiStartedAt;
+    if (toolResult && !toolResult.toolFailed) {
+      reply       = toolResult.reply;
+      provider    = toolResult.toolUsed;
+      phoneAction = toolResult.phoneAction || null;
+    } else {
+      if (toolResult?.toolFailed) console.log(`[Chat] Tool failed for ${toolResult.toolUsed}, using AI`);
+      const ai = await RouterService.route(trimmed, memCtx);
+      reply    = ai.reply;
+      provider = ai.provider;
+    }
 
-    let audio    = null;
-    let audioUrl = null;
-    let ttsError = null;
+    const aiMs = Date.now() - t1;
 
+    // TTS
+    let audio = null, audioUrl = null, ttsError = null;
     try {
       audio    = await TTSService.textToSpeech(reply, { voice });
       audioUrl = `${getServerUrl(req)}/audio/${audio.filename}`;
-    } catch (error) {
-      ttsError = error.message;
-      console.warn(`[Chat] TTS failed: ${error.message}`);
+    } catch (e) {
+      ttsError = e.message;
     }
 
     return res.json({
-      reply,
-      provider,
-      audioUrl,
-      voice: audio?.voice || TTSService.MAYA_VOICE,
-      timings: {
-        aiMs:    aiDurationMs,
-        ttsMs:   audio?.durationMs || null,
-        totalMs: Date.now() - requestStartedAt,
-      },
-      hasMemoryContext: memCtx.length > 0,   // useful for debugging
+      reply, provider, audioUrl,
+      voice:           audio?.voice || TTSService.MAYA_VOICE,
+      phoneAction,
+      timings:         { aiMs, ttsMs: audio?.durationMs || null, totalMs: Date.now() - t0 },
+      hasMemoryContext: memCtx.length > 0,
       ...(ttsError ? { ttsError } : {}),
     });
 
-  } catch (error) {
-    console.error(`[Chat] Provider error: ${error.message}`);
-    return res.status(503).json({
-      error:    'AI provider unavailable',
-      detail:   error.message,
-      provider: error.provider || 'unknown',
-    });
+  } catch (err) {
+    return res.status(503).json({ error: 'Provider unavailable', detail: err.message });
   }
 }
 

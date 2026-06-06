@@ -5,7 +5,8 @@ const express = require('express');
 const helmet = require('helmet');
 
 const audioRoute = require('./routes/audioRoute');
-const chatRoute = require('./routes/chatRoute');
+const chatRoute  = require('./routes/chatRoute');
+const ttsRoute   = require('./routes/ttsRoute');
 const {
   MAYA_VOICE,
   MAX_AGE_MS,
@@ -22,16 +23,18 @@ const CLEANUP_INTERVAL_MS = Number(process.env.TTS_CLEANUP_INTERVAL_MS || 5 * 60
 app.set('trust proxy', true);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '12mb' })); // Phase 4: 12mb for base64 image uploads
 
 app.use('/', chatRoute);
 app.use('/', audioRoute);
+app.use('/', ttsRoute);
 
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     service: 'Maya AI Router',
-    phase: 2,
+    phase: 4,
+    tools: ['weather', 'air_quality', 'news', 'youtube', 'wikipedia'],
     tts: {
       provider: 'msedge-tts',
       voice: MAYA_VOICE,
@@ -66,6 +69,7 @@ setInterval(() => {
 }, CLEANUP_INTERVAL_MS).unref();
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Maya AI Router Phase 2 running on http://0.0.0.0:${PORT}`);
+  console.log(`Maya AI Router Phase 4 running on http://0.0.0.0:${PORT}`);
   console.log(`Chat: POST /chat | Audio: GET /audio/:filename | Voice: ${MAYA_VOICE}`);
+  console.log(`Tools: Weather, Air Quality, News, YouTube, Wikipedia (auto-routing)`);
 });
