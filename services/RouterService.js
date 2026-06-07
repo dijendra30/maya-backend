@@ -40,19 +40,39 @@ function isFailoverTrigger(err) {
   const msg    = (err.message || '').toLowerCase();
   const status = err.response?.status;
   return (
+    status === 400 ||                              // Bad request (malformed call)
+    status === 401 ||                              // Unauthorized — bad API key
+    status === 403 ||                              // Forbidden — billing/quota
     status === 429 ||                              // Rate limit
-    status >= 500 ||                              // Server error
-    err.code === 'ECONNABORTED' ||                // Timeout
+    status >= 500 ||                               // Server error
+    err.code === 'ECONNABORTED' ||                 // Timeout
     err.code === 'ETIMEDOUT' ||
-    err.code === 'ENOTFOUND' ||                   // Network error
+    err.code === 'ENOTFOUND' ||                    // Network error
     err.code === 'ECONNREFUSED' ||
     msg.includes('timeout') ||
     msg.includes('rate limit') ||
     msg.includes('quota') ||
     msg.includes('empty') ||
     msg.includes('no response') ||
-    msg.includes('returned an empty')
+    msg.includes('returned an empty') ||
+    msg.includes('not set') ||                     // GEMINI_API_KEY not set in .env
+    msg.includes('api key') ||                     // generic key error
+    msg.includes('unauthorized') ||
+    msg.includes('invalid') ||
+    msg.includes('forbidden')
   );
+}
+
+// ── Provider Key Pre-flight ────────────────────────────────────────────────
+// Checks API key presence BEFORE calling the provider, so missing keys are
+// logged clearly and skipped — not silently swallowed by the catch block.
+function providerHasKey(key) {
+  switch (key) {
+    case 'gemini':     return !!(process.env.GEMINI_API_KEY     && process.env.GEMINI_API_KEY     !== 'your_gemini_api_key_here');
+    case 'groq':       return !!(process.env.GROQ_API_KEY       && process.env.GROQ_API_KEY       !== 'your_groq_api_key_here');
+    case 'openrouter': return !!(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key_here');
+    default:           return false;
+  }
 }
 
 // ── Debug Logger ───────────────────────────────────────────────────────────
@@ -84,6 +104,14 @@ async function route(message, context = '', pendingContext = '') {
 
     if (!provider) {
       console.warn(`[Router] Unknown provider key skipped: "${key}"`);
+      continue;
+    }
+
+    // Pre-flight: skip providers with missing/placeholder API keys immediately
+    // so the log clearly shows WHY Gemini was skipped (not silently swallowed).
+    if (!providerHasKey(key)) {
+      const nextKey = AI_PROVIDER_CHAIN[i + 1] || null;
+      console.warn(`[Router] ⚠ ${key}: API key not configured — skipping${nextKey ? ` → trying ${nextKey}` : ''}`);
       continue;
     }
 
@@ -124,9 +152,9 @@ async function route(message, context = '', pendingContext = '') {
         continue;
       }
 
-      // Non-failover error on the first provider — still try next
+      // Unexpected error — still try next provider but log it clearly
       if (nextKey) {
-        console.warn(`[Router] ✗ ${key} error (${err.message?.slice(0, 60)}) → trying ${nextKey}`);
+        console.error(`[Router] ✗ ${key} unexpected error → trying ${nextKey} | reason: ${err.message?.slice(0, 80)}`);
         continue;
       }
 
