@@ -1,3 +1,18 @@
+/**
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ *  Maya AI — Chat Controller  (Phase 6 — Production Routing)
+ * └──────────────────────────────────────────────────────────────────────┘
+ *
+ * Full pipeline (per spec):
+ *   User → RouterService (Gemini Flash → Groq → OpenRouter)
+ *        → Intent Detection → Entity Extraction → Task Planning
+ *        → Tool Selection → Execution (synchronous) → Verification → Response
+ *
+ * Debug logging (DEBUG_ROUTING=true):
+ *   Detected Intent | Extracted Entities | Selected Tool
+ *   Execution Result | Execution Time | Selected AI Provider | Failover Events
+ */
+
 const RouterService     = require('../services/RouterService');
 const ToolRouterService = require('../services/ToolRouterService');
 const TTSService        = require('../services/TTSService');
@@ -8,16 +23,25 @@ function getServerUrl(req) {
   return `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}`;
 }
 
+function dbg(label, data) {
+  if (process.env.DEBUG_ROUTING !== 'true') return;
+  const ts = new Date().toISOString().slice(11, 23);
+  console.log(`[ChatCtrl:${ts}] ${label}`, typeof data === 'object' ? JSON.stringify(data) : (data || ''));
+}
+
 async function handleChat(req, res) {
   const {
-    message, voice, context,
-    location,                   // Phase 4: city name
-    googleToken,                // Phase 4: Google OAuth token (legacy / client-direct path)
-    latitude, longitude,        // Phase 4: GPS coordinates
-    imageBase64,                // Phase 4: Vision — base64 image
-    userId,                     // Phase 5: user identifier for server-side token lookup
-    pendingContext,             // Phase 4: multi-turn slot context from Android ConversationSlot
-    extractedEntities,          // Phase 4: pre-extracted entities { city, topic } from Android
+    message,
+    voice,
+    context,
+    location,
+    googleToken,
+    latitude,
+    longitude,
+    imageBase64,
+    userId,
+    pendingContext,
+    extractedEntities,
   } = req.body || {};
 
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -28,79 +52,146 @@ async function handleChat(req, res) {
   const memCtx       = typeof context === 'string' ? context.trim() : '';
   const userLocation = typeof location === 'string' ? location.trim() : '';
   const resolvedUser = typeof userId === 'string' && userId.trim() ? userId.trim() : 'default';
-  // Phase 4: pending multi-turn slot context from Android ConversationSlot
   const pendingCtx   = typeof pendingContext === 'string' ? pendingContext.trim() : '';
-  // Phase 4: pre-extracted entities map { city?, topic? } from Android on-device parser
   const entities     = (typeof extractedEntities === 'object' && extractedEntities !== null)
     ? extractedEntities : null;
-  const t0           = Date.now();
+
+  const t0 = Date.now();
+
+  dbg('Request', {
+    message:   trimmed.slice(0, 80),
+    userId:    resolvedUser,
+    location:  userLocation || null,
+    entities,
+    hasPending: !!pendingCtx,
+    hasImage:  !!(imageBase64),
+  });
 
   try {
-    const t1 = Date.now();
     let reply, provider, phoneAction = null, authRequired = false, connectAction = null;
     let toolVerified = false;
+    let selectedTool = null;
 
+    const t1 = Date.now();
+
+    // ── Step 1: Tool Routing Pipeline ───────────────────────────────────────
+    // Tool execution is FULLY SYNCHRONOUS from user's perspective.
+    // Maya NEVER responds before the tool finishes.
     const toolResult = await ToolRouterService.route(trimmed, userLocation, {
       userId:            resolvedUser,
       googleToken:       googleToken || null,
       latitude:          latitude  != null ? parseFloat(latitude)  : null,
       longitude:         longitude != null ? parseFloat(longitude) : null,
       imageBase64:       imageBase64 || null,
-      extractedEntities: entities,   // Phase 4: pass pre-extracted entities to tools
+      extractedEntities: entities,
     });
 
+    const toolMs = Date.now() - t1;
+
+    // ── Step 2: Route Result Handling ───────────────────────────────────────
     if (toolResult) {
-      // Auth-blocked — return prompt + connect action without AI fallback
+      selectedTool = toolResult.toolUsed;
+
       if (toolResult.authRequired) {
+        // Auth-blocked — return prompt immediately, NO AI fallback
         reply         = toolResult.reply;
         provider      = toolResult.toolUsed;
         authRequired  = true;
         connectAction = toolResult.connectAction || null;
         phoneAction   = null;
+        toolVerified  = false;
+
+        dbg('AuthBlocked', { tool: selectedTool, provider: connectAction?.provider });
+
       } else if (!toolResult.toolFailed) {
-        reply       = toolResult.reply;
-        provider    = toolResult.toolUsed;
-        phoneAction = toolResult.phoneAction || null;
+        // Tool succeeded with real data
+        reply        = toolResult.reply;
+        provider     = toolResult.toolUsed;
+        phoneAction  = toolResult.phoneAction || null;
         toolVerified = toolResult.toolVerified || false;
+
+        dbg('ToolSuccess', { tool: selectedTool, toolMs, verified: toolVerified, reply: reply?.slice(0,80) });
+
       } else {
-        // Tool failed — fall back to AI with pending slot context
-        console.log(`[Chat] Tool failed for ${toolResult.toolUsed}, using AI`);
-        const ai = await RouterService.route(trimmed, memCtx, pendingCtx);
+        // Tool failed — AI fallback with slot context
+        dbg('ToolFailed', { tool: selectedTool, toolMs });
+        console.log(`[ChatCtrl] Tool failed for ${toolResult.toolUsed}, using AI fallback`);
+
+        const t2  = Date.now();
+        const ai  = await RouterService.route(trimmed, memCtx, pendingCtx);
+        const aiMs2 = Date.now() - t2;
+
         reply    = ai.reply;
         provider = ai.provider;
+        dbg('AIFallback', { provider: ai.provider, aiMs: aiMs2 });
       }
     } else {
-      // No tool matched — pure AI answer with pending slot context
-      const ai = await RouterService.route(trimmed, memCtx, pendingCtx);
+      // No tool matched — pure AI answer
+      dbg('NoTool', 'Pure AI route');
+
+      const t2  = Date.now();
+      const ai  = await RouterService.route(trimmed, memCtx, pendingCtx);
+      const aiMs2 = Date.now() - t2;
+
       reply    = ai.reply;
       provider = ai.provider;
+      dbg('AIAnswer', { provider: ai.provider, aiMs: aiMs2 });
     }
 
     const aiMs = Date.now() - t1;
 
-    // TTS
+    // ── Step 3: Safety Guard — never send empty reply ───────────────────────
+    if (!reply || !reply.trim()) {
+      reply    = "I'm sorry, I couldn't process that request. Please try again.";
+      provider = provider || 'fallback';
+    }
+
+    // ── Step 4: TTS (non-blocking — doesn't affect routing) ────────────────
     let audio = null, audioUrl = null, ttsError = null;
     try {
       audio    = await TTSService.textToSpeech(reply, { voice });
       audioUrl = `${getServerUrl(req)}/audio/${audio.filename}`;
     } catch (e) {
       ttsError = e.message;
+      console.warn(`[ChatCtrl] TTS failed: ${e.message}`);
+    }
+
+    const totalMs = Date.now() - t0;
+
+    // ── Step 5: Debug log full pipeline result ──────────────────────────────
+    if (process.env.DEBUG_ROUTING === 'true') {
+      dbg('Pipeline:Complete', {
+        selectedTool,
+        provider,
+        toolVerified,
+        authRequired,
+        totalMs,
+        replyPreview: reply?.slice(0, 80),
+      });
+    } else {
+      console.log(`[ChatCtrl] ✓ tool=${selectedTool || 'ai'} | provider=${provider} | verified=${toolVerified} | totalMs=${totalMs}`);
     }
 
     return res.json({
-      reply, provider, audioUrl,
+      reply,
+      provider,
+      audioUrl,
       voice:            audio?.voice || TTSService.MAYA_VOICE,
       phoneAction,
       toolVerified,
       authRequired:     authRequired || undefined,
       connectAction:    connectAction || undefined,
-      timings:          { aiMs, ttsMs: audio?.durationMs || null, totalMs: Date.now() - t0 },
+      timings:          { aiMs, ttsMs: audio?.durationMs || null, totalMs },
       hasMemoryContext: memCtx.length > 0,
+      selectedTool,
       ...(ttsError ? { ttsError } : {}),
     });
 
   } catch (err) {
-    return res.status(503).json({ error: 'Provider unavailable', detail: err.message });
+    const totalMs = Date.now() - t0;
+    console.error(`[ChatCtrl] ✗ Fatal error after ${totalMs}ms: ${err.stack || err.message}`);
+    dbg('FatalError', { message: err.message, totalMs });
+    return res.status(503).json({ error: 'Service temporarily unavailable', detail: err.message });
   }
 }
 
