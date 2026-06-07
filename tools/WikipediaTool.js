@@ -93,9 +93,11 @@ async function fetch(message) {
   const topic = extractTopic(message);
 
   if (!topic || topic.length < 2) {
+    // Phase 4: fall back to AI — never hard-fail with no answer
     return {
       reply: "I need to know what topic to look up. Could you be more specific?",
       toolUsed: 'wikipedia',
+      toolFailed: true,
     };
   }
 
@@ -114,6 +116,7 @@ async function fetch(message) {
     return {
       reply: `I found a Wikipedia page for ${topic}, but there was no summary available.`,
       toolUsed: 'wikipedia',
+      toolFailed: true,   // Phase 4: no content — let AI answer instead
     };
 
   } catch (err) {
@@ -130,11 +133,13 @@ async function fetch(message) {
         return {
           reply: `I could not find Wikipedia information for "${topic}". Try rephrasing your question.`,
           toolUsed: 'wikipedia',
+          toolFailed: true,   // Phase 4: trigger AI fallback
         };
       } catch {
         return {
           reply: `I could not find information about "${topic}" on Wikipedia.`,
           toolUsed: 'wikipedia',
+          toolFailed: true,   // Phase 4: trigger AI fallback
         };
       }
     }

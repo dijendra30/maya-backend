@@ -16,6 +16,8 @@ async function handleChat(req, res) {
     latitude, longitude,        // Phase 4: GPS coordinates
     imageBase64,                // Phase 4: Vision — base64 image
     userId,                     // Phase 5: user identifier for server-side token lookup
+    pendingContext,             // Phase 4: multi-turn slot context from Android ConversationSlot
+    extractedEntities,          // Phase 4: pre-extracted entities { city, topic } from Android
   } = req.body || {};
 
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -26,6 +28,11 @@ async function handleChat(req, res) {
   const memCtx       = typeof context === 'string' ? context.trim() : '';
   const userLocation = typeof location === 'string' ? location.trim() : '';
   const resolvedUser = typeof userId === 'string' && userId.trim() ? userId.trim() : 'default';
+  // Phase 4: pending multi-turn slot context from Android ConversationSlot
+  const pendingCtx   = typeof pendingContext === 'string' ? pendingContext.trim() : '';
+  // Phase 4: pre-extracted entities map { city?, topic? } from Android on-device parser
+  const entities     = (typeof extractedEntities === 'object' && extractedEntities !== null)
+    ? extractedEntities : null;
   const t0           = Date.now();
 
   try {
@@ -34,11 +41,12 @@ async function handleChat(req, res) {
     let toolVerified = false;
 
     const toolResult = await ToolRouterService.route(trimmed, userLocation, {
-      userId:      resolvedUser,
-      googleToken: googleToken || null,
-      latitude:    latitude  != null ? parseFloat(latitude)  : null,
-      longitude:   longitude != null ? parseFloat(longitude) : null,
-      imageBase64: imageBase64 || null,
+      userId:            resolvedUser,
+      googleToken:       googleToken || null,
+      latitude:          latitude  != null ? parseFloat(latitude)  : null,
+      longitude:         longitude != null ? parseFloat(longitude) : null,
+      imageBase64:       imageBase64 || null,
+      extractedEntities: entities,   // Phase 4: pass pre-extracted entities to tools
     });
 
     if (toolResult) {
@@ -55,14 +63,15 @@ async function handleChat(req, res) {
         phoneAction = toolResult.phoneAction || null;
         toolVerified = toolResult.toolVerified || false;
       } else {
-        // Tool failed — fall back to AI
+        // Tool failed — fall back to AI with pending slot context
         console.log(`[Chat] Tool failed for ${toolResult.toolUsed}, using AI`);
-        const ai = await RouterService.route(trimmed, memCtx);
+        const ai = await RouterService.route(trimmed, memCtx, pendingCtx);
         reply    = ai.reply;
         provider = ai.provider;
       }
     } else {
-      const ai = await RouterService.route(trimmed, memCtx);
+      // No tool matched — pure AI answer with pending slot context
+      const ai = await RouterService.route(trimmed, memCtx, pendingCtx);
       reply    = ai.reply;
       provider = ai.provider;
     }

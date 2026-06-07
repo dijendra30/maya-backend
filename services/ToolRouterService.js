@@ -186,7 +186,7 @@ function buildCapabilityReply(userId, authStatus) {
 // ── Tool Executor ─────────────────────────────────────────────────────────────
 
 async function executeTool(toolName, message, location, options) {
-  const { latitude, longitude, imageBase64 } = options;
+  const { latitude, longitude, imageBase64, extractedEntities } = options;
   switch (toolName) {
     case 'vision':      return VisionTool.analyze(message, imageBase64);
     case 'calendar':    return CalendarTool.fetch(message, options._resolvedToken);
@@ -194,12 +194,14 @@ async function executeTool(toolName, message, location, options) {
     case 'gmail':       return GmailTool.fetch(message, options._resolvedToken);
     case 'drive':       return DriveTool.fetch(message, options._resolvedToken);
     case 'air_quality': return AirQualityTool.fetch(location);
-    case 'weather':     return WeatherTool.fetch(message, location);
+    case 'weather':     return WeatherTool.fetch(message, extractedEntities?.city || location);
     case 'music':       return MusicTool.fetch(message);
     case 'news':        return NewsTool.fetch(message);
     case 'location':    return LocationTool.fetch(message, location, { latitude, longitude });
     case 'youtube':     return YouTubeTool.search(message);
-    case 'wikipedia':   return WikipediaTool.fetch(message);
+    // Phase 4: if Android already extracted the topic, pass it directly so Wikipedia
+    // searches "Quantum Engineering" instead of the whole sentence.
+    case 'wikipedia':   return WikipediaTool.fetch(extractedEntities?.topic || message);
     default:            return null;
   }
 }

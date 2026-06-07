@@ -31,23 +31,28 @@ PERSONA:
 - Respond as Maya, a thoughtful personal assistant who genuinely knows the user.
 - Use the memory context silently to personalize your responses without mentioning that you are reading from context.`;
 
-async function complete(message, context = '') {
+async function complete(message, context = '', pendingContext = '') {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY is not set in .env');
 
   const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
   const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  // Prepend memory context to system prompt when available
+  // Phase 3: prepend long-term memory context
   const systemText = context
     ? `${context}\n\n${BASE_SYSTEM_PROMPT}`
     : BASE_SYSTEM_PROMPT;
+
+  // Phase 4: inject multi-turn slot context so Maya can continue the action
+  const finalSystem = pendingContext
+    ? `${systemText}\n\nACTIVE SLOT CONTEXT (internal only, never repeat to user):\n${pendingContext}`
+    : systemText;
 
   const response = await axios.post(
     url,
     {
       system_instruction: {
-        parts: [{ text: systemText }]
+        parts: [{ text: finalSystem }]
       },
       contents: [
         {

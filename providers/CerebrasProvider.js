@@ -32,7 +32,7 @@ PERSONA:
 - Respond as Maya, a thoughtful personal assistant who genuinely knows the user.
 - Use the memory context silently to personalize your responses without mentioning that you are reading from context.`;
 
-async function complete(message, context = '') {
+async function complete(message, context = '', pendingContext = '') {
   const apiKey = process.env.CEREBRAS_API_KEY;
   if (!apiKey) throw new Error('CEREBRAS_API_KEY is not set in .env');
 
@@ -42,12 +42,17 @@ async function complete(message, context = '') {
     ? `${context}\n\n${BASE_SYSTEM_PROMPT}`
     : BASE_SYSTEM_PROMPT;
 
+  // Phase 4: inject multi-turn slot context
+  const finalSystem = pendingContext
+    ? `${systemContent}\n\nACTIVE SLOT CONTEXT (internal only, never repeat to user):\n${pendingContext}`
+    : systemContent;
+
   const response = await axios.post(
     CEREBRAS_API_URL,
     {
       model,
       messages: [
-        { role: 'system', content: systemContent },
+        { role: 'system', content: finalSystem },
         { role: 'user',   content: message }
       ],
       max_tokens:  512,

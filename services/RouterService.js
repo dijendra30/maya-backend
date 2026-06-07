@@ -72,13 +72,14 @@ function selectProvider(message) {
 
 /**
  * Route a message to the best available provider.
- * Memory context is forwarded to every provider transparently.
+ * Memory context and pending slot context are forwarded to every provider.
  *
- * @param   {string} message  User message
- * @param   {string} context  Memory context from MemoryManager (may be empty)
+ * @param   {string} message        User message
+ * @param   {string} context        Memory context from MemoryManager (may be empty)
+ * @param   {string} pendingContext Multi-turn slot context, e.g. "[PENDING_ACTION intent=send_message recipient=Dad]"
  * @returns {Promise<{ reply: string, provider: string }>}
  */
-async function route(message, context = '') {
+async function route(message, context = '', pendingContext = '') {
   const primary = selectProvider(message);
   const chain = [primary, ...FAILOVER_CHAIN.filter(key => key !== primary)];
 
@@ -92,13 +93,12 @@ async function route(message, context = '') {
     }
 
     try {
-      // Phase 3: pass context to provider
-      const reply = await provider.complete(message, context);
+      const reply = await provider.complete(message, context, pendingContext);
 
       if (key !== primary) {
         console.log(`[Router] ⚡ Fallback activated: ${primary} → ${key}`);
       } else {
-        console.log(`[Router] ✓ Routed to: ${key} | memory context: ${context ? 'YES' : 'NO'}`);
+        console.log(`[Router] ✓ Routed to: ${key} | memory: ${context ? 'YES' : 'NO'} | slot: ${pendingContext ? 'YES' : 'NO'}`);
       }
 
       return { reply, provider: key };

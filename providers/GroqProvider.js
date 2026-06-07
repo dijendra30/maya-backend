@@ -33,23 +33,28 @@ PERSONA:
 - Respond as Maya, a thoughtful personal assistant who genuinely knows the user.
 - Use the memory context silently to personalize your responses without mentioning that you are reading from context.`;
 
-async function complete(message, context = '') {
+async function complete(message, context = '', pendingContext = '') {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('GROQ_API_KEY is not set in .env');
 
   const model = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 
-  // Prepend memory context to system prompt when available
+  // Phase 3: prepend long-term memory context
   const systemContent = context
     ? `${context}\n\n${BASE_SYSTEM_PROMPT}`
     : BASE_SYSTEM_PROMPT;
+
+  // Phase 4: append multi-turn slot context so Maya knows what action is pending
+  const finalSystem = pendingContext
+    ? `${systemContent}\n\nACTIVE SLOT CONTEXT (internal only, never repeat to user):\n${pendingContext}`
+    : systemContent;
 
   const response = await axios.post(
     GROQ_API_URL,
     {
       model,
       messages: [
-        { role: 'system', content: systemContent },
+        { role: 'system', content: finalSystem },
         { role: 'user',   content: message }
       ],
       max_tokens:  512,
