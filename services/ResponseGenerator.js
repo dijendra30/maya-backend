@@ -20,7 +20,7 @@
  * This module NEVER executes tools. It only transforms results into speech.
  */
 
-const RouterService = require('./RouterService');
+const { routeConversation } = require('./RouterService');
 
 // ── Debug Logger ───────────────────────────────────────────────────────────
 function dbg(label, data) {
@@ -65,7 +65,7 @@ async function generate({
   // ── No steps / No tool: pure AI answer ───────────────────────────────────
   if (!stepResults || stepResults.length === 0) {
     dbg('PureAI', 'No tool results, routing to AI');
-    const ai = await RouterService.route(originalMessage, memoryContext, pendingContext);
+    const ai = await routeConversation(originalMessage, memoryContext, pendingContext);
     dbg('PureAI:Result', { provider: ai.provider, elapsedMs: Date.now() - t0 });
     return ai;
   }
@@ -96,8 +96,8 @@ async function generate({
       };
     }
 
-    // No results at all — AI answer
-    const ai = await RouterService.route(originalMessage, memoryContext, pendingContext);
+    // No results at all — route to conversation layer (Groq)
+    const ai = await routeConversation(originalMessage, memoryContext, pendingContext);
     return ai;
   }
 
@@ -106,7 +106,8 @@ async function generate({
   if (wikiResult) {
     const wikiContext = `WIKIPEDIA DATA:\n${wikiResult.data.reply}\n\nAnswer the user's question using ONLY this data, in natural spoken language.`;
     dbg('WikipediaAsContext', { chars: wikiContext.length });
-    const ai = await RouterService.route(originalMessage, wikiContext, pendingContext);
+    // Wikipedia — Groq summarises the data in natural spoken language
+    const ai = await routeConversation(originalMessage, wikiContext, pendingContext);
     return { reply: ai.reply, provider: ai.provider };
   }
 

@@ -112,97 +112,72 @@ function dbg(label, data) {
   console.log(`[Router:${ts}] ${label}`, typeof data === 'object' ? JSON.stringify(data) : data);
 }
 
-// ── Main Route Entry ───────────────────────────────────────────────────────
+// ── Shared call helper ────────────────────────────────────────────────────
+async function callProvider(key, message, context, pendingContext) {
+  const provider = PROVIDERS[key];
+  if (!provider)            throw new Error(`Unknown provider: ${key}`);
+  if (!providerHasKey(key)) throw new Error(`${key}: API key not configured`);
+  const reply = await provider.complete(message, context, pendingContext);
+  if (!reply || !reply.trim()) throw new Error(`${key} returned empty response`);
+  return reply.trim();
+}
 
-/**
- * Route a message through the AI provider chain.
- *
- * @param {string} message        User message (may be entity-augmented)
- * @param {string} context        Long-term memory context
- * @param {string} pendingContext Multi-turn slot context
- * @returns {Promise<{ reply: string, provider: string }>}
- */
-async function route(message, context = '', pendingContext = '') {
-  const t0        = Date.now();
-  let   lastError = null;
+// ══════════════════════════════════════════════════════════════════════════
+// SYSTEM ROUTE  —  Gemini only
+// Used for: Routing · Planning · Intent Detection · Memory Decisions
+// ══════════════════════════════════════════════════════════════════════════
+async function routeSystem(message, context = '') {
+  const t0 = Date.now();
+  dbg('System Route', { message: message.slice(0, 80) });
+  try {
+    const reply = await callProvider('gemini', message, context, '');
+    console.log(`[Router:System] ✓ gemini | ${Date.now() - t0}ms`);
+    return { reply, provider: 'gemini' };
+  } catch (err) {
+    console.error(`[Router:System] ✗ gemini failed — ${err.message?.slice(0, 80)}`);
+    // Emergency fallback: if Gemini is down, use conversation layer
+    return routeConversation(message, context, '');
+  }
+}
 
-  dbg('AI Route', { message: message.slice(0, 80), hasContext: !!context, hasPending: !!pendingContext });
+// ══════════════════════════════════════════════════════════════════════════
+// CONVERSATION ROUTE  —  Groq → OpenRouter
+// Used for: Conversation · Explanations · Summaries
+// ══════════════════════════════════════════════════════════════════════════
+async function routeConversation(message, context = '', pendingContext = '') {
+  const CONV_CHAIN = ['groq', 'openrouter'];
+  const t0         = Date.now();
+  let   lastError  = null;
 
-  for (let i = 0; i < AI_PROVIDER_CHAIN.length; i++) {
-    const key      = AI_PROVIDER_CHAIN[i];
-    const provider = PROVIDERS[key];
+  dbg('Conversation Route', { message: message.slice(0, 80) });
 
-    if (!provider) {
-      console.warn(`[Router] Unknown provider key skipped: "${key}"`);
-      continue;
-    }
-
-    // Pre-flight: skip providers with missing/placeholder API keys immediately
-    // so the log clearly shows WHY Gemini was skipped (not silently swallowed).
-    if (!providerHasKey(key)) {
-      const nextKey = AI_PROVIDER_CHAIN[i + 1] || null;
-      console.warn(`[Router] ⚠ ${key}: API key not configured — skipping${nextKey ? ` → trying ${nextKey}` : ''}`);
-      continue;
-    }
-
-    const isFirst  = i === 0;
-    const isFallback = !isFirst;
-
+  for (let i = 0; i < CONV_CHAIN.length; i++) {
+    const key = CONV_CHAIN[i];
     try {
-      const reply = await provider.complete(message, context, pendingContext);
-
-      // Empty-response failover
-      if (!reply || !reply.trim()) {
-        const emptyErr = new Error(`${key} returned empty response`);
-        dbg('Failover:Empty', { from: key, to: AI_PROVIDER_CHAIN[i + 1] || 'none' });
-        console.warn(`[Router] ✗ ${key} empty response — triggering failover`);
-        lastError = emptyErr;
-        continue;
-      }
-
-      const elapsedMs = Date.now() - t0;
-      if (isFallback) {
-        console.log(`[Router] ⚡ Fallback activated → ${key} | elapsedMs=${elapsedMs}`);
-        dbg('Fallback:Success', { provider: key, elapsedMs });
-      } else {
-        dbg('Success', { provider: key, elapsedMs });
-      }
-
-      return { reply: reply.trim(), provider: key };
-
+      const reply = await callProvider(key, message, context, pendingContext);
+      console.log(`[Router:Conv] ✓ ${key} | ${Date.now() - t0}ms`);
+      return { reply, provider: key };
     } catch (err) {
       lastError = err;
-
-      const shouldFailover = isFailoverTrigger(err);
-      const nextKey        = AI_PROVIDER_CHAIN[i + 1] || null;
-
-      if (shouldFailover && nextKey) {
-        console.warn(`[Router] ✗ ${key} failed (${err.message?.slice(0, 60)}) → failover to ${nextKey}`);
-        dbg('Failover:Trigger', { from: key, to: nextKey, reason: err.message?.slice(0, 60) });
-        continue;
+      const next = CONV_CHAIN[i + 1] || null;
+      if (next) {
+        console.warn(`[Router:Conv] ✗ ${key} → ${next} | ${err.message?.slice(0, 60)}`);
+      } else {
+        console.error(`[Router:Conv] ✗ ${key} failed, no more providers`);
       }
-
-      // Unexpected error — still try next provider but log it clearly
-      if (nextKey) {
-        console.error(`[Router] ✗ ${key} unexpected error → trying ${nextKey} | reason: ${err.message?.slice(0, 80)}`);
-        continue;
-      }
-
-      // No more providers
-      break;
     }
   }
 
-  // All providers exhausted
-  const fatal = new Error(`All AI providers failed. Last: ${lastError?.message || 'unknown'}`);
+  const fatal = new Error(`Conversation providers exhausted. Last: ${lastError?.message || 'unknown'}`);
   fatal.provider = 'none';
-  console.error(`[Router] ✗ ALL providers failed after ${Date.now() - t0}ms`);
   throw fatal;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-function containsAny(text, keywords) {
-  return keywords.some(k => text.includes(k));
+// ══════════════════════════════════════════════════════════════════════════
+// LEGACY route()  —  backward-compat wrapper → uses routeConversation
+// ══════════════════════════════════════════════════════════════════════════
+async function route(message, context = '', pendingContext = '') {
+  return routeConversation(message, context, pendingContext);
 }
 
-module.exports = { route };
+module.exports = { route, routeSystem, routeConversation };

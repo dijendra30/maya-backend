@@ -27,6 +27,49 @@ function dbg(label, data) {
 // ── Per-Tool Verification Rules ────────────────────────────────────────────
 const TOOL_VERIFIERS = {
 
+  send_message: (result) => {
+    // Device action — verify phoneAction was built with required fields
+    const pa = result.phoneAction;
+    const hasAction = !!(pa && (pa.type === 'SEND_WHATSAPP' || pa.type === 'SEND_MESSAGE') && pa.recipient);
+    return {
+      verified: hasAction,
+      evidence: hasAction
+        ? `phoneAction built: type=${pa.type}, recipient=${pa.recipient}`
+        : 'Missing phoneAction or recipient — message cannot be sent',
+    };
+  },
+
+  call_contact: (result) => {
+    const pa = result.phoneAction;
+    const hasAction = !!(pa && pa.type === 'CALL' && pa.recipient);
+    return {
+      verified: hasAction,
+      evidence: hasAction
+        ? `phoneAction built: CALL to ${pa.recipient}`
+        : 'Missing phoneAction or recipient — call cannot be placed',
+    };
+  },
+
+  open_app: (result) => {
+    const pa = result.phoneAction;
+    const hasAction = !!(pa && pa.type === 'OPEN_APP' && (pa.package || pa.app));
+    return {
+      verified: hasAction,
+      evidence: hasAction
+        ? `phoneAction built: OPEN_APP ${pa.package || pa.app}`
+        : 'Missing phoneAction or app target',
+    };
+  },
+
+  device_control: (result) => {
+    const pa = result.phoneAction;
+    const hasAction = !!(pa && pa.type === 'DEVICE_ACTION');
+    return {
+      verified: hasAction,
+      evidence: hasAction ? `DEVICE_ACTION dispatched` : 'No DEVICE_ACTION phoneAction found',
+    };
+  },
+
   gmail: (result) => {
     const reply = result.reply || '';
     // Must contain email-specific data (subject, sender, "email", "inbox")
