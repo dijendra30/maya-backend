@@ -22,6 +22,7 @@ const audioRoute = require('./routes/audioRoute');
 const chatRoute  = require('./routes/chatRoute');
 const ttsRoute   = require('./routes/ttsRoute');
 const authRoute  = require('./routes/authRoute');   // ← Phase 5: OAuth routes
+const notificationRoute = require('./routes/notificationRoute');
 const {
   MAYA_VOICE,
   MAX_AGE_MS,
@@ -45,6 +46,7 @@ app.use('/', chatRoute);
 app.use('/', audioRoute);
 app.use('/', ttsRoute);
 app.use('/', authRoute);   // GET /auth/google  /auth/status  etc.
+app.use('/', notificationRoute);
 
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {

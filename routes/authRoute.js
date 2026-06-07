@@ -344,6 +344,53 @@ router.get('/auth/tools', (req, res) => {
   res.json({ userId, grouped, providers: authStatus });
 });
 
+// ── POST /auth/google/verify ──────────────────────────────────────────────
+//
+// Called by Android after Google Sign-In SDK gives us an access token.
+// Stores the token server-side so PermissionGuard can use it for API calls
+// without requiring the user to go through the full browser OAuth flow.
+//
+// Body: { idToken, accessToken, userId }
+
+router.post('/auth/google/verify', async (req, res) => {
+  const { idToken, accessToken, userId } = req.body || {};
+
+  if (!accessToken || !userId) {
+    return res.status(400).json({ success: false, message: 'accessToken and userId are required' });
+  }
+
+  try {
+    // Verify the access token and get the user's email from Google
+    let email = null;
+    try {
+      const { data } = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 5000,
+      });
+      email = data.email || null;
+    } catch (verifyErr) {
+      console.warn('[Auth/verify] Could not fetch userinfo:', verifyErr.message);
+      // Don't block — token may still be valid for API calls
+    }
+
+    // Store access token so PermissionGuard can find it for this userId
+    // Android tokens typically last 1 hour; no refresh_token available from this path
+    TokenStore.saveToken(userId, 'google', {
+      access_token:  accessToken,
+      refresh_token: null,          // no refresh token from Android SDK path
+      expires_in:    3600,
+      email,
+    });
+
+    console.log(`[Auth/verify] Google token stored for user ${userId} (${email || 'email unknown'})`);
+    return res.json({ success: true, email, message: 'Google token stored successfully' });
+
+  } catch (err) {
+    console.error('[Auth/verify] Error:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // ── HTML helper pages ─────────────────────────────────────────────────────────
 
 function successPage(provider, email) {

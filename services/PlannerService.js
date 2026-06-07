@@ -253,7 +253,7 @@ function inferIntentFromPhrase(phrase) {
   if (/\b(email|inbox|gmail)\b/i.test(lower))           return 'gmail';
   if (/\b(calendar|schedule|meeting|event)\b/i.test(lower)) return 'calendar';
   if (/\b(play|music|song|playlist)\b/i.test(lower))    return 'music';
-  if (/\b(flashlight|torch|volume|brightness|bluetooth|wifi)\b/i.test(lower)) return 'device_control';
+  if (/\b(flashlight|torch|volume|brightness|bluetooth|wifi|battery|sms|messages)\b/i.test(lower)) return 'device_control';
   if (/\b(news|headlines)\b/i.test(lower))              return 'news';
   if (/\b(search|find|video|youtube)\b/i.test(lower))   return 'youtube';
 
