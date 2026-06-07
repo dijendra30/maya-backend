@@ -84,20 +84,16 @@ async function generate({
 
   // ── All steps failed ────────────────────────────────────────────────────
   if (successResults.length === 0 && pendingResults.length === 0) {
-    // If tool failed, try AI fallback
+    // If tool failed, DO NOT fallback to AI (prevent hallucinated success). Return exact error.
     if (failedResults.length > 0) {
       const toolNames = failedResults.map(r => r.tool).join(', ');
       dbg('AllFailed', { tools: toolNames });
-
-      try {
-        const ai = await RouterService.route(originalMessage, memoryContext, pendingContext);
-        return ai;
-      } catch {
-        return {
-          reply:    `I tried to use ${toolNames} but encountered an error. Please try again.`,
-          provider: 'fallback',
-        };
-      }
+      
+      const failureReason = failedResults.map(r => r.data?.reply || `I couldn't complete the ${r.tool} action.`).join(' ');
+      return {
+        reply:    failureReason,
+        provider: 'system',
+      };
     }
 
     // No results at all — AI answer

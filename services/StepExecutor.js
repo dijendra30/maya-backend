@@ -110,6 +110,10 @@ async function execute(steps, context = {}) {
     }
 
     // ── Server-side step: execute tool ─────────────────────────────────────
+    let attempts = 0;
+    const maxAttempts = 3;
+    let toolResult = null;
+
     try {
       const toolOptions = {
         userId:            context.userId,
@@ -121,12 +125,24 @@ async function execute(steps, context = {}) {
         _resolvedToken:    permission.token,
       };
 
-      const toolResult = await ToolRouterService.executeTool(
-        step.tool,
-        step.params.rawMessage || context.message,
-        context.location || '',
-        toolOptions
-      );
+      while (attempts < maxAttempts) {
+        try {
+          attempts++;
+          toolResult = await ToolRouterService.executeTool(
+            step.tool,
+            step.params.rawMessage || context.message,
+            context.location || '',
+            toolOptions
+          );
+          break; // Success
+        } catch (err) {
+          const is401 = err.response?.status === 401 || err.message?.includes('401');
+          if (is401 || attempts >= maxAttempts) {
+            throw err;
+          }
+          dbg('RetryTool', { tool: step.tool, attempt: attempts, error: err.message });
+        }
+      }
 
       const stepElapsed = Date.now() - stepT0;
 
