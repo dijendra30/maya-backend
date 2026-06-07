@@ -39,13 +39,13 @@ const SYSTEM_PROMPT = `You are an intent classifier for a voice assistant.
 
 Given a user message, identify the single best intent:
   calendar       – schedule, meetings, events, appointments
-  gmail          – email, inbox, read email, send email, unread
+  gmail          – STRICTLY for Email. (read email, send email, inbox, gmail)
   weather        – weather, temperature, rain, forecast, humidity
   maps           – navigate, directions, nearest place, open maps
   music          – play music, songs, playlist, mood-based music
   wikipedia      – who is, what is, explain, history, biography, facts
   news           – headlines, current events, breaking news, latest news
-  send_message   – send message/text/whatsapp to someone
+  send_message   – STRICTLY for WhatsApp, SMS, text messages. (send whatsapp, text, message, say hi to)
   call_contact   – call someone, dial, ring
   open_app       – open instagram, launch spotify, go to youtube
   google_drive   – find file, search drive, my notes, documents

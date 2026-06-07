@@ -236,8 +236,11 @@ function buildPhoneAction(step) {
       };
 
     case 'send_message':
+      const msgLower = (step.params.rawMessage || '').toLowerCase();
+      const isWhatsapp = msgLower.includes('whatsapp');
+      
       return {
-        type:        'SEND_MESSAGE',
+        type:        isWhatsapp ? 'SEND_WHATSAPP' : 'SEND_MESSAGE',
         recipient:   step.params.recipient || null,
         message:     step.params.message || null,
         confirmText: step.params.message
