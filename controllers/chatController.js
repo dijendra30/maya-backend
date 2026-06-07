@@ -1,21 +1,26 @@
 /**
  * ┌──────────────────────────────────────────────────────────────────────┐
- *  Maya AI — Chat Controller  (Phase 6 — Production Routing)
+ *  Maya AI — Chat Controller  (Core Router)
  * └──────────────────────────────────────────────────────────────────────┘
  *
- * Full pipeline (per spec):
- *   User → RouterService (Gemini Flash → Groq → OpenRouter)
- *        → Intent Detection → Entity Extraction → Task Planning
- *        → Tool Selection → Execution (synchronous) → Verification → Response
+ * Core Router pipeline (per spec):
+ *   User → Intent Detection → Planner → Executor → Verification
+ *        → Response Generator → TTS
+ *
+ * CRITICAL RULE:
+ *   NEVER ALLOW AN AI MODEL TO PRETEND A TASK WAS DONE.
+ *   Only real results may be spoken.
  *
  * Debug logging (DEBUG_ROUTING=true):
- *   Detected Intent | Extracted Entities | Selected Tool
- *   Execution Result | Execution Time | Selected AI Provider | Failover Events
+ *   Detected Intent | Plan Steps | Execution Results | Verification
  */
 
-const RouterService     = require('../services/RouterService');
-const ToolRouterService = require('../services/ToolRouterService');
-const TTSService        = require('../services/TTSService');
+const ToolRouterService  = require('../services/ToolRouterService');
+const PlannerService     = require('../services/PlannerService');
+const StepExecutor       = require('../services/StepExecutor');
+const ResponseGenerator  = require('../services/ResponseGenerator');
+const VerificationGuard  = require('../services/VerificationGuard');
+const TTSService         = require('../services/TTSService');
 
 function getServerUrl(req) {
   const c = process.env.SERVER_URL;
@@ -68,136 +73,175 @@ async function handleChat(req, res) {
   });
 
   try {
-    let reply, provider, phoneAction = null, authRequired = false, connectAction = null;
-    let toolVerified = false;
-    let selectedTool = null;
+    const hasImage = !!(imageBase64);
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // STAGE 1: INTENT DETECTION (Router)
+    // ═══════════════════════════════════════════════════════════════════════
     const t1 = Date.now();
+    const detection = await ToolRouterService.detectIntent(trimmed, hasImage, entities || {});
+    const detectMs  = Date.now() - t1;
 
-    // ── Step 1: Tool Routing Pipeline ───────────────────────────────────────
-    // Tool execution is FULLY SYNCHRONOUS from user's perspective.
-    // Maya NEVER responds before the tool finishes.
-    const toolResult = await ToolRouterService.route(trimmed, userLocation, {
+    const detectedTool   = detection.tool;
+    const detectedIntent = detection.intent || detection.tool;
+    const mergedEntities = { ...(entities || {}), ...detection.entities };
+
+    dbg('Stage1:Intent', {
+      tool:     detectedTool,
+      intent:   detectedIntent,
+      entities: mergedEntities,
+      tier:     detection.tier,
+      detectMs,
+    });
+
+    // ── Capability Query (special case — no planner needed) ────────────────
+    if (detectedTool === 'capability_query') {
+      const TokenStore = require('../auth/TokenStore');
+      const ToolRegistry = require('../auth/ToolRegistry');
+      const authStatus = TokenStore.getAuthStatus(resolvedUser);
+      const allTools   = ToolRegistry.getAllTools();
+      const publicTools = allTools.filter(t => !t.requiresAuth).map(t => t.label);
+      const googleTools = allTools.filter(t => t.authProvider === 'google').map(t => t.label);
+
+      let capReply = `Here's what I can access right now. `;
+      capReply    += `Always available: ${publicTools.join(', ')}. `;
+      if (authStatus?.google?.connected) {
+        capReply += `Google account connected (${authStatus.google.email || 'linked'}): ${googleTools.join(', ')}. `;
+      } else {
+        capReply += `Google tools locked (${googleTools.join(', ')}) — connect your Google account to enable these. `;
+      }
+      capReply += `I only access tools you have explicitly authorized.`;
+
+      return await sendResponse(req, res, {
+        reply: capReply, provider: 'capability_query', selectedTool: 'capability_query',
+        toolVerified: true, voice, memCtx, t0,
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STAGE 2: PLANNING
+    // ═══════════════════════════════════════════════════════════════════════
+    const t2   = Date.now();
+    const plan = PlannerService.plan(trimmed, detectedIntent, detectedTool, mergedEntities);
+    const planMs = Date.now() - t2;
+
+    dbg('Stage2:Plan', {
+      steps:              plan.steps.length,
+      requiresCollection: plan.requiresCollection,
+      planMs,
+    });
+
+    // ── Collection Mode: missing required fields ───────────────────────────
+    if (plan.requiresCollection) {
+      const genResult = await ResponseGenerator.generate({
+        originalMessage: trimmed,
+        memoryContext:   memCtx,
+        pendingContext:  pendingCtx,
+        collectionMode:  plan.collectionMode,
+      });
+
+      return await sendResponse(req, res, {
+        reply: genResult.reply, provider: genResult.provider,
+        selectedTool: detectedTool, toolVerified: false, voice, memCtx, t0,
+        collectionMode: plan.collectionMode,
+      });
+    }
+
+    // ── No tool / No steps: pure AI answer ─────────────────────────────────
+    if (plan.steps.length === 0) {
+      dbg('Stage2:NoSteps', 'Pure AI route');
+      const genResult = await ResponseGenerator.generate({
+        originalMessage: trimmed,
+        memoryContext:   memCtx,
+        pendingContext:  pendingCtx,
+      });
+
+      return await sendResponse(req, res, {
+        reply: genResult.reply, provider: genResult.provider,
+        selectedTool: null, toolVerified: false, voice, memCtx, t0,
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STAGE 3: EXECUTION
+    // ═══════════════════════════════════════════════════════════════════════
+    const t3 = Date.now();
+    const execResult = await StepExecutor.execute(plan.steps, {
+      message:           trimmed,
+      location:          userLocation,
       userId:            resolvedUser,
       googleToken:       googleToken || null,
       latitude:          latitude  != null ? parseFloat(latitude)  : null,
       longitude:         longitude != null ? parseFloat(longitude) : null,
       imageBase64:       imageBase64 || null,
-      extractedEntities: entities,
+      extractedEntities: mergedEntities,
+    });
+    const execMs = Date.now() - t3;
+
+    dbg('Stage3:Execution', {
+      resultCount:  execResult.results.length,
+      phoneActions: execResult.phoneActions.length,
+      authRequired: execResult.authRequired,
+      execMs,
     });
 
-    const toolMs = Date.now() - t1;
-
-    // ── Step 2: Route Result Handling ───────────────────────────────────────
-    if (toolResult) {
-      selectedTool = toolResult.toolUsed;
-
-      if (toolResult.authRequired) {
-        // Auth-blocked — return prompt immediately, NO AI fallback
-        reply         = toolResult.reply;
-        provider      = toolResult.toolUsed;
-        authRequired  = true;
-        connectAction = toolResult.connectAction || null;
-        phoneAction   = null;
-        toolVerified  = false;
-
-        dbg('AuthBlocked', { tool: selectedTool, provider: connectAction?.provider });
-
-      } else if (!toolResult.toolFailed) {
-        // spec: Wikipedia is a DATA SOURCE only — AI (Gemini Flash → Groq → OpenRouter)
-        // generates the spoken answer from it. Never return raw Wikipedia text directly.
-        if (selectedTool === 'wikipedia') {
-          const wikiContext = `WIKIPEDIA DATA:\n${toolResult.reply}\n\nAnswer the user's question using ONLY this data, in natural spoken language.`;
-          dbg('WikipediaAsContext', { chars: wikiContext.length });
-          const t2    = Date.now();
-          const ai    = await RouterService.route(trimmed, wikiContext, pendingCtx);
-          const aiMs2 = Date.now() - t2;
-          reply        = ai.reply;
-          provider     = ai.provider;
-          toolVerified = true;
-          dbg('WikipediaAIAnswer', { provider: ai.provider, aiMs: aiMs2, reply: reply?.slice(0, 80) });
-        } else {
-          // Tool succeeded with real data
-          reply        = toolResult.reply;
-          provider     = toolResult.toolUsed;
-          phoneAction  = toolResult.phoneAction || null;
-          toolVerified = toolResult.toolVerified || false;
-          dbg('ToolSuccess', { tool: selectedTool, toolMs, verified: toolVerified, reply: reply?.slice(0,80) });
-        }
-
-      } else {
-        // Tool failed — AI fallback with slot context
-        dbg('ToolFailed', { tool: selectedTool, toolMs });
-        console.log(`[ChatCtrl] Tool failed for ${toolResult.toolUsed}, using AI fallback`);
-
-        const t2  = Date.now();
-        const ai  = await RouterService.route(trimmed, memCtx, pendingCtx);
-        const aiMs2 = Date.now() - t2;
-
-        reply    = ai.reply;
-        provider = ai.provider;
-        dbg('AIFallback', { provider: ai.provider, aiMs: aiMs2 });
-      }
-    } else {
-      // No tool matched — pure AI answer
-      dbg('NoTool', 'Pure AI route');
-
-      const t2  = Date.now();
-      const ai  = await RouterService.route(trimmed, memCtx, pendingCtx);
-      const aiMs2 = Date.now() - t2;
-
-      reply    = ai.reply;
-      provider = ai.provider;
-      dbg('AIAnswer', { provider: ai.provider, aiMs: aiMs2 });
-    }
-
-    const aiMs = Date.now() - t1;
-
-    // ── Step 3: Safety Guard — never send empty reply ───────────────────────
-    if (!reply || !reply.trim()) {
-      reply    = "I'm sorry, I couldn't process that request. Please try again.";
-      provider = provider || 'fallback';
-    }
-
-    // ── Step 4: TTS (non-blocking — doesn't affect routing) ────────────────
-    let audio = null, audioUrl = null, ttsError = null;
-    try {
-      audio    = await TTSService.textToSpeech(reply, { voice });
-      audioUrl = `${getServerUrl(req)}/audio/${audio.filename}`;
-    } catch (e) {
-      ttsError = e.message;
-      console.warn(`[ChatCtrl] TTS failed: ${e.message}`);
-    }
-
-    const totalMs = Date.now() - t0;
-
-    // ── Step 5: Debug log full pipeline result ──────────────────────────────
-    if (process.env.DEBUG_ROUTING === 'true') {
-      dbg('Pipeline:Complete', {
-        selectedTool,
-        provider,
-        toolVerified,
-        authRequired,
-        totalMs,
-        replyPreview: reply?.slice(0, 80),
+    // ── Auth-blocked during execution ──────────────────────────────────────
+    if (execResult.authRequired) {
+      const authResult = execResult.results.find(r => r.status === 'auth_blocked');
+      return await sendResponse(req, res, {
+        reply:         authResult?.data?.reply || 'Please connect your account to use this feature.',
+        provider:      authResult?.tool || detectedTool,
+        selectedTool:  authResult?.tool || detectedTool,
+        toolVerified:  false,
+        authRequired:  true,
+        connectAction: execResult.connectAction,
+        voice, memCtx, t0,
+        executionPlan: execResult.results,
       });
-    } else {
-      console.log(`[ChatCtrl] ✓ tool=${selectedTool || 'ai'} | provider=${provider} | verified=${toolVerified} | totalMs=${totalMs}`);
     }
 
-    return res.json({
-      reply,
-      provider,
-      audioUrl,
-      voice:            audio?.voice || TTSService.MAYA_VOICE,
+    // ═══════════════════════════════════════════════════════════════════════
+    // STAGE 4: VERIFICATION GUARD
+    // ═══════════════════════════════════════════════════════════════════════
+    // Already verified per-step inside StepExecutor.
+    // Apply response-level guard after ResponseGenerator.
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STAGE 5: RESPONSE GENERATION
+    // ═══════════════════════════════════════════════════════════════════════
+    const t4 = Date.now();
+    const genResult = await ResponseGenerator.generate({
+      stepResults:     execResult.results,
+      originalMessage: trimmed,
+      memoryContext:   memCtx,
+      pendingContext:  pendingCtx,
+      selectedTool:    detectedTool,
+    });
+    const genMs = Date.now() - t4;
+
+    dbg('Stage5:Response', { provider: genResult.provider, genMs, reply: genResult.reply?.slice(0, 80) });
+
+    // ── Verification Guard on final response ───────────────────────────────
+    const guard = VerificationGuard.guardResponse(genResult.reply, execResult.results);
+    const finalReply = guard.safe ? genResult.reply : guard.sanitizedReply;
+
+    // Determine phone action (first one from results, for backward compat)
+    const phoneAction = execResult.phoneActions.length > 0 ? execResult.phoneActions[0] : null;
+
+    // Determine toolVerified (all completed steps verified)
+    const allVerified = execResult.results.every(r =>
+      r.status === 'completed' ? r.verified : true
+    );
+    const anyCompleted = execResult.results.some(r => r.status === 'completed');
+
+    return await sendResponse(req, res, {
+      reply:         finalReply,
+      provider:      genResult.provider,
+      selectedTool:  detectedTool,
+      toolVerified:  anyCompleted && allVerified,
       phoneAction,
-      toolVerified,
-      authRequired:     authRequired || undefined,
-      connectAction:    connectAction || undefined,
-      timings:          { aiMs, ttsMs: audio?.durationMs || null, totalMs },
-      hasMemoryContext: memCtx.length > 0,
-      selectedTool,
-      ...(ttsError ? { ttsError } : {}),
+      voice, memCtx, t0,
+      executionPlan: execResult.results,
     });
 
   } catch (err) {
@@ -206,6 +250,66 @@ async function handleChat(req, res) {
     dbg('FatalError', { message: err.message, totalMs });
     return res.status(503).json({ error: 'Service temporarily unavailable', detail: err.message });
   }
+}
+
+// ── Unified Response Sender ────────────────────────────────────────────────
+// Handles TTS, logging, and JSON response in one place.
+
+async function sendResponse(req, res, {
+  reply, provider, selectedTool, toolVerified = false,
+  phoneAction = null, authRequired = false, connectAction = null,
+  collectionMode = null, executionPlan = null,
+  voice, memCtx, t0,
+}) {
+  // Safety guard — never send empty reply
+  if (!reply || !reply.trim()) {
+    reply    = "I'm sorry, I couldn't process that request. Please try again.";
+    provider = provider || 'fallback';
+  }
+
+  // ── TTS ──────────────────────────────────────────────────────────────────
+  let audio = null, audioUrl = null, ttsError = null;
+  try {
+    audio    = await TTSService.textToSpeech(reply, { voice });
+    audioUrl = `${getServerUrl(req)}/audio/${audio.filename}`;
+  } catch (e) {
+    ttsError = e.message;
+    console.warn(`[ChatCtrl] TTS failed: ${e.message}`);
+  }
+
+  const totalMs = Date.now() - t0;
+
+  // ── Logging ──────────────────────────────────────────────────────────────
+  if (process.env.DEBUG_ROUTING === 'true') {
+    dbg('Pipeline:Complete', {
+      selectedTool, provider, toolVerified, authRequired,
+      steps: executionPlan?.length || 0,
+      totalMs, replyPreview: reply?.slice(0, 80),
+    });
+  } else {
+    console.log(`[ChatCtrl] ✓ tool=${selectedTool || 'ai'} | provider=${provider} | verified=${toolVerified} | totalMs=${totalMs}`);
+  }
+
+  // ── JSON Response ────────────────────────────────────────────────────────
+  return res.json({
+    // ── Backward-compatible fields (unchanged from Phase 6) ────────────
+    reply,
+    provider,
+    audioUrl,
+    voice:            audio?.voice || TTSService.MAYA_VOICE,
+    phoneAction,
+    toolVerified,
+    authRequired:     authRequired || undefined,
+    connectAction:    connectAction || undefined,
+    timings:          { totalMs },
+    hasMemoryContext: memCtx.length > 0,
+    selectedTool,
+    ...(ttsError ? { ttsError } : {}),
+
+    // ── Core Router additions ──────────────────────────────────────────
+    executionPlan:    executionPlan || undefined,
+    collectionMode:   collectionMode || undefined,
+  });
 }
 
 module.exports = { handleChat };

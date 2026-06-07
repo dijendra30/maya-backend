@@ -1,11 +1,15 @@
 /**
  * ┌──────────────────────────────────────────────────────────────────────┐
- *  Maya AI — Tool Router Service  (Phase 6 — Production)
+ *  Maya AI — Tool Router Service  (Core Router)
  * └──────────────────────────────────────────────────────────────────────┘
  *
- * Routing pipeline (per spec):
- *   User → Intent Detection → Entity Extraction → Task Planning
- *        → Tool Selection → Execution → Verification → Response
+ * Core Router pipeline (per spec):
+ *   User → Intent Detection → Planner → Executor → Verification → Response
+ *
+ * Public API:
+ *   detectIntent(message, hasImage, preEntities) → { tool, intent, entities, tier }
+ *   executeTool(toolName, message, location, options) → tool result
+ *   route(message, location, options) → combined (LEGACY, preserved for compat)
  *
  * Tiers:
  *   Tier 1 — Rule-based keyword detection (fast, zero LLM cost)
@@ -225,14 +229,29 @@ async function detectTool(message, hasImage, preExtractedEntities) {
       const elapsedMs = Date.now() - t0;
       dbg('Tier2:LLMMatch', { intent: result.intent, tool: toolName, entities: mergedEntities, elapsedMs });
       if (toolName !== undefined) {
-        return { tool: toolName, entities: mergedEntities, tier: 2 };
+        return { tool: toolName, entities: mergedEntities, tier: 2, intent: result.intent };
       }
+      // Intent detected but maps to null (device-side) — still return it
+      return { tool: null, entities: mergedEntities, tier: 2, intent: result.intent };
     }
   } catch (err) {
     console.warn(`[ToolRouter] IntentClassifier error: ${err.message}`);
   }
 
-  return { tool: null, entities: preExtractedEntities || {}, tier: 0 };
+  return { tool: null, entities: preExtractedEntities || {}, tier: 0, intent: null };
+}
+
+// ── Public Intent Detection API (used by Core Router chatController) ──────
+/**
+ * Detect intent and extract entities WITHOUT executing any tool.
+ *
+ * @param {string} message             - User message
+ * @param {boolean} hasImage           - Whether an image is attached
+ * @param {object} preExtractedEntities - Pre-extracted entities from Android
+ * @returns {Promise<{ tool: string|null, intent: string|null, entities: object, tier: number }>}
+ */
+async function detectIntent(message, hasImage = false, preExtractedEntities = {}) {
+  return detectTool(message, hasImage, preExtractedEntities);
 }
 
 // ── Capability Query Handler ───────────────────────────────────────────────
@@ -466,4 +485,4 @@ async function route(message, location = '', options = {}) {
   return result;
 }
 
-module.exports = { route, detectTool };
+module.exports = { route, detectTool, detectIntent, executeTool };
