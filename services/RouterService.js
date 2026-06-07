@@ -31,8 +31,29 @@ const PROVIDERS = {
   openrouter: OpenRouterProvider,
 };
 
-// ── Priority Chain (spec: Gemini Flash → Groq → OpenRouter) ───────────────
-const AI_PROVIDER_CHAIN = ['gemini', 'groq', 'openrouter'];
+// ── Priority Chain ────────────────────────────────────────────────────────
+// Spec default: Gemini Flash → Groq → OpenRouter
+// Override by setting DEFAULT_PROVIDER in .env (e.g. DEFAULT_PROVIDER=groq
+// if Gemini key is unavailable).
+(function validateGeminiKey() {
+  const key = process.env.GEMINI_API_KEY || '';
+  // Google AI Studio keys start with "AQ." — Google Cloud keys start with "AIza"
+  // Both are valid Gemini API keys depending on where they were generated.
+  if (key && !key.startsWith('AQ.') && !key.startsWith('AIza')) {
+    console.error('[Router] ✗ GEMINI_API_KEY looks invalid (expected prefix: "AQ." or "AIza"). Get a key from https://aistudio.google.com/app/apikey');
+  }
+})();
+
+function buildProviderChain() {
+  const preferred = (process.env.DEFAULT_PROVIDER || 'gemini').toLowerCase().trim();
+  const base      = ['gemini', 'groq', 'openrouter'];
+  if (!base.includes(preferred) || preferred === 'gemini') return base;
+  // Move the preferred provider to position 0; spec fallback order preserved
+  return [preferred, ...base.filter(p => p !== preferred)];
+}
+
+const AI_PROVIDER_CHAIN = buildProviderChain();
+console.log(`[Router] Provider chain: ${AI_PROVIDER_CHAIN.join(' → ')} (DEFAULT_PROVIDER=${process.env.DEFAULT_PROVIDER || 'gemini'})`);
 
 // ── Failover Trigger Detection ─────────────────────────────────────────────
 function isFailoverTrigger(err) {
@@ -68,10 +89,19 @@ function isFailoverTrigger(err) {
 // logged clearly and skipped — not silently swallowed by the catch block.
 function providerHasKey(key) {
   switch (key) {
-    case 'gemini':     return !!(process.env.GEMINI_API_KEY     && process.env.GEMINI_API_KEY     !== 'your_gemini_api_key_here');
-    case 'groq':       return !!(process.env.GROQ_API_KEY       && process.env.GROQ_API_KEY       !== 'your_groq_api_key_here');
-    case 'openrouter': return !!(process.env.OPENROUTER_API_KEY && process.env.OPENROUTER_API_KEY !== 'your_openrouter_api_key_here');
-    default:           return false;
+    case 'gemini': {
+      const k = process.env.GEMINI_API_KEY || '';
+      return k.length > 10 && (k.startsWith('AQ.') || k.startsWith('AIza'));
+    }
+    case 'groq': {
+      const k = process.env.GROQ_API_KEY || '';
+      return k.length > 10 && k !== 'your_groq_api_key_here';
+    }
+    case 'openrouter': {
+      const k = process.env.OPENROUTER_API_KEY || '';
+      return k.length > 10 && k !== 'your_openrouter_api_key_here';
+    }
+    default: return false;
   }
 }
 

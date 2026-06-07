@@ -204,10 +204,16 @@ async function classify(message) {
     return { intent: cached.intent, entities: cached.entities };
   }
 
-  const providers = [
-    { name: 'gemini', fn: () => classifyWithGemini(message) },
-    { name: 'groq',   fn: () => classifyWithGroq(message)   },
-  ];
+  const preferred = (process.env.DEFAULT_PROVIDER || 'gemini').toLowerCase().trim();
+  const providers = preferred === 'groq'
+    ? [
+        { name: 'groq',   fn: () => classifyWithGroq(message)   },
+        { name: 'gemini', fn: () => classifyWithGemini(message) },
+      ]
+    : [
+        { name: 'gemini', fn: () => classifyWithGemini(message) },
+        { name: 'groq',   fn: () => classifyWithGroq(message)   },
+      ];
 
   for (const { name, fn } of providers) {
     try {
