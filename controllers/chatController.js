@@ -104,13 +104,26 @@ async function handleChat(req, res) {
         dbg('AuthBlocked', { tool: selectedTool, provider: connectAction?.provider });
 
       } else if (!toolResult.toolFailed) {
-        // Tool succeeded with real data
-        reply        = toolResult.reply;
-        provider     = toolResult.toolUsed;
-        phoneAction  = toolResult.phoneAction || null;
-        toolVerified = toolResult.toolVerified || false;
-
-        dbg('ToolSuccess', { tool: selectedTool, toolMs, verified: toolVerified, reply: reply?.slice(0,80) });
+        // spec: Wikipedia is a DATA SOURCE only — AI (Gemini Flash → Groq → OpenRouter)
+        // generates the spoken answer from it. Never return raw Wikipedia text directly.
+        if (selectedTool === 'wikipedia') {
+          const wikiContext = `WIKIPEDIA DATA:\n${toolResult.reply}\n\nAnswer the user's question using ONLY this data, in natural spoken language.`;
+          dbg('WikipediaAsContext', { chars: wikiContext.length });
+          const t2    = Date.now();
+          const ai    = await RouterService.route(trimmed, wikiContext, pendingCtx);
+          const aiMs2 = Date.now() - t2;
+          reply        = ai.reply;
+          provider     = ai.provider;
+          toolVerified = true;
+          dbg('WikipediaAIAnswer', { provider: ai.provider, aiMs: aiMs2, reply: reply?.slice(0, 80) });
+        } else {
+          // Tool succeeded with real data
+          reply        = toolResult.reply;
+          provider     = toolResult.toolUsed;
+          phoneAction  = toolResult.phoneAction || null;
+          toolVerified = toolResult.toolVerified || false;
+          dbg('ToolSuccess', { tool: selectedTool, toolMs, verified: toolVerified, reply: reply?.slice(0,80) });
+        }
 
       } else {
         // Tool failed — AI fallback with slot context

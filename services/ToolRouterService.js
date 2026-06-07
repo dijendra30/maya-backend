@@ -182,7 +182,7 @@ const INTENT_TO_TOOL = {
   open_app:      null,       // handled by PhoneActionDetector on Android
   google_drive:  'drive',
   device_control: null,      // handled locally on Android
-  knowledge_query: 'wikipedia',
+  knowledge_query: null,       // spec: knowledge questions → Gemini Flash, not Wikipedia
   general_chat:   null,      // pure AI
   air_quality:   'air_quality',
   location:      'location',
