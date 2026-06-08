@@ -151,10 +151,13 @@ async function routeConversation(message, context = '', pendingContext = '') {
 
   dbg('Conversation Route', { message: message.slice(0, 80) });
 
+  // STRICT GUARD: Prevent Groq from hallucinating actions if intent classifier missed an action intent
+  const strictContext = context + `\n\nCRITICAL SYSTEM INSTRUCTION: You are Maya, a voice assistant. You CANNOT perform any real-world actions directly (like checking emails, sending messages, setting alarms, checking files, reading drive, or looking up contacts) using this text-only response layer. If the user asks you to perform an action, you MUST reply explaining that you encountered an error connecting to the service or that the tool failed, rather than pretending you did it. NEVER hallucinate or fabricate completing an action. NEVER say "I have sent the message" or "Here is your email".`;
+
   for (let i = 0; i < CONV_CHAIN.length; i++) {
     const key = CONV_CHAIN[i];
     try {
-      const reply = await callProvider(key, message, context, pendingContext);
+      const reply = await callProvider(key, message, strictContext, pendingContext);
       console.log(`[Router:Conv] ✓ ${key} | ${Date.now() - t0}ms`);
       return { reply, provider: key };
     } catch (err) {

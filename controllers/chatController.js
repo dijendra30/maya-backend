@@ -62,6 +62,7 @@ async function handleChat(req, res) {
     ? extractedEntities : null;
 
   const t0 = Date.now();
+  console.log(`\n[ROUTER] User Input: "${trimmed}"`);
 
   dbg('Request', {
     message:   trimmed.slice(0, 80),
@@ -280,6 +281,7 @@ async function sendResponse(req, res, {
   const totalMs = Date.now() - t0;
 
   // ── Logging ──────────────────────────────────────────────────────────────
+  console.log(`[ROUTER] Final Response Model: ${provider}`);
   if (process.env.DEBUG_ROUTING === 'true') {
     dbg('Pipeline:Complete', {
       selectedTool, provider, toolVerified, authRequired,

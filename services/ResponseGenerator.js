@@ -72,7 +72,7 @@ async function generate({
 
   // ── Process step results ─────────────────────────────────────────────────
   const successResults = stepResults.filter(r => r.status === 'completed' && r.verified);
-  const failedResults  = stepResults.filter(r => r.status === 'failed');
+  const failedResults  = stepResults.filter(r => r.status === 'failed' || r.status === 'unverified'); // unverified must NEVER be ignored
   const pendingResults = stepResults.filter(r => r.status === 'pending_device');
 
   dbg('Results', {
@@ -84,16 +84,22 @@ async function generate({
 
   // ── All steps failed ────────────────────────────────────────────────────
   if (successResults.length === 0 && pendingResults.length === 0) {
-    // If tool failed, DO NOT fallback to AI (prevent hallucinated success). Return exact error.
     if (failedResults.length > 0) {
-      const toolNames = failedResults.map(r => r.tool).join(', ');
-      dbg('AllFailed', { tools: toolNames });
-      
-      const failureReason = failedResults.map(r => r.data?.reply || `I couldn't complete the ${r.tool} action.`).join(' ');
-      return {
-        reply:    failureReason,
-        provider: 'system',
-      };
+      dbg('AllFailed', { tools: failedResults.map(r => r.tool).join(', ') });
+
+      // Wikipedia-only failure: Wikipedia is a data source, not the answer.
+      // Let Groq answer the knowledge question from its own knowledge.
+      const allWikiFailed = failedResults.every(r => r.tool === 'wikipedia');
+      if (allWikiFailed) {
+        dbg('WikiFailed:GroqFallback', 'Wikipedia unavailable — routing knowledge question to Groq');
+        return routeConversation(originalMessage, memoryContext, pendingContext);
+      }
+
+      // All other tool failures: return honest error — never hallucinate
+      const failureReason = failedResults
+        .map(r => r.data?.reply || `I couldn't complete the ${r.tool} action.`)
+        .join(' ');
+      return { reply: failureReason, provider: 'system' };
     }
 
     // No results at all — route to conversation layer (Groq)

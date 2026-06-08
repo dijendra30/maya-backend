@@ -208,34 +208,31 @@ function detectToolByKeywords(message, hasImage) {
   return null;
 }
 
-// ── Tier 2: LLM Classification (Gemini Flash → Groq) ──────────────────────
+// ── Intent Classification (Gemini Flash → Groq fallback) ────────────────
 async function detectTool(message, hasImage, preExtractedEntities) {
   const t0 = Date.now();
 
-  // Tier 1: keyword match (zero cost, zero latency)
-  const keywordTool = detectToolByKeywords(message, hasImage);
-  if (keywordTool) {
-    dbg('Tier1:KeywordMatch', { tool: keywordTool, elapsedMs: Date.now() - t0 });
-    return { tool: keywordTool, entities: preExtractedEntities || {}, tier: 1 };
-  }
-
-  // Tier 2: LLM classify with entity extraction
+  // Tier 1: LLM classify with entity extraction (GEMINI FIRST)
   try {
     const result = await IntentClassifier.classify(message);
-    if (result) {
+    if (result && result.intent) {
       const toolName = INTENT_TO_TOOL[result.intent];
-      // Merge pre-extracted entities from Android with LLM-extracted
       const mergedEntities = { ...result.entities, ...(preExtractedEntities || {}) };
       const elapsedMs = Date.now() - t0;
-      dbg('Tier2:LLMMatch', { intent: result.intent, tool: toolName, entities: mergedEntities, elapsedMs });
-      if (toolName !== undefined) {
-        return { tool: toolName, entities: mergedEntities, tier: 2, intent: result.intent };
-      }
-      // Intent detected but maps to null (device-side) — still return it
-      return { tool: null, entities: mergedEntities, tier: 2, intent: result.intent };
+      dbg('Tier1:LLMMatch', { intent: result.intent, tool: toolName, entities: mergedEntities, elapsedMs });
+      
+      // Even if toolName is null (handled locally on Android), we return it
+      return { tool: toolName !== undefined ? toolName : null, entities: mergedEntities, tier: 1, intent: result.intent };
     }
   } catch (err) {
     console.warn(`[ToolRouter] IntentClassifier error: ${err.message}`);
+  }
+
+  // Tier 2: Keyword match fallback (if LLM fails)
+  const keywordTool = detectToolByKeywords(message, hasImage);
+  if (keywordTool) {
+    dbg('Tier2:KeywordMatch', { tool: keywordTool, elapsedMs: Date.now() - t0 });
+    return { tool: keywordTool, entities: preExtractedEntities || {}, tier: 2, intent: keywordTool };
   }
 
   return { tool: null, entities: preExtractedEntities || {}, tier: 0, intent: null };
@@ -409,6 +406,7 @@ async function route(message, location = '', options = {}) {
   }
 
   const userId = options.userId || 'default';
+  console.log(`[ROUTER] Selected Tool: ${toolName || 'none'} (Intent: ${detectedIntent})`);
   console.log(`[ToolRouter] ROUTE: tool=${toolName} | user=${userId} | tier=${tier} | loc=${location || '-'} | clientToken=${!!options.googleToken} | img=${hasImage} | entities=${JSON.stringify(mergedEntities)}`);
 
   // ── Step 3: Permission Check ────────────────────────────────────────────
@@ -437,6 +435,7 @@ async function route(message, location = '', options = {}) {
   // Maya NEVER speaks "checking email" and then stops — she waits for the data.
 
   dbg('Executing', { tool: toolName, entities: mergedEntities });
+  console.log(`[ROUTER] Tool Executed: ${toolName}`);
 
   let result;
   try {
@@ -479,6 +478,7 @@ async function route(message, location = '', options = {}) {
   // Tool returned data — mark as verified
   result.toolVerified = !result.toolFailed;
 
+  console.log(`[ROUTER] Tool Result: ${result.toolFailed ? 'Failed' : 'Success'} | Verified: ${result.toolVerified}`);
   console.log(`[ToolRouter] ✓ SUCCESS: ${toolName} | elapsedMs=${execMs} | verified=${result.toolVerified}`);
   dbg('Success', { tool: toolName, reply: result.reply?.slice(0, 80), elapsedMs: execMs, verified: result.toolVerified });
 

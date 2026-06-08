@@ -104,6 +104,7 @@ async function classifyWithGemini(message) {
   const timer      = setTimeout(() => controller.abort(), 3000);
 
   try {
+    console.log(`[ROUTER] Gemini Called: "${message.slice(0, 50)}..."`);
     const { data } = await axios.post(
       GEMINI_CLASSIFY_URL(apiKey, model),
       {
@@ -119,6 +120,7 @@ async function classifyWithGemini(message) {
     );
     clearTimeout(timer);
     const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    console.log(`[ROUTER] Gemini Result: ${raw.replace(/\n/g, '')}`);
     return parseClassifyResponse(raw);
   } catch (err) {
     clearTimeout(timer);
@@ -204,16 +206,10 @@ async function classify(message) {
     return { intent: cached.intent, entities: cached.entities };
   }
 
-  const preferred = (process.env.DEFAULT_PROVIDER || 'gemini').toLowerCase().trim();
-  const providers = preferred === 'groq'
-    ? [
-        { name: 'groq',   fn: () => classifyWithGroq(message)   },
-        { name: 'gemini', fn: () => classifyWithGemini(message) },
-      ]
-    : [
-        { name: 'gemini', fn: () => classifyWithGemini(message) },
-        { name: 'groq',   fn: () => classifyWithGroq(message)   },
-      ];
+  const providers = [
+    { name: 'gemini', fn: () => classifyWithGemini(message) },
+    { name: 'groq',   fn: () => classifyWithGroq(message)   },
+  ];
 
   for (const { name, fn } of providers) {
     try {

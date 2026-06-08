@@ -147,18 +147,27 @@ async function execute(steps, context = {}) {
       const stepElapsed = Date.now() - stepT0;
 
       if (!toolResult || !toolResult.reply) {
-        // Tool returned empty — mark failed
         results.push({
-          stepIndex: step.stepIndex,
-          tool:      step.tool,
-          action:    step.action,
-          status:    'failed',
-          verified:  false,
-          data:      { reply: `I tried to use ${step.tool} but it returned no data.` },
+          stepIndex: step.stepIndex, tool: step.tool, action: step.action,
+          status: 'failed', verified: false,
+          data:   { reply: `I tried to use ${step.tool} but it returned no data.` },
           elapsedMs: stepElapsed,
         });
-
         dbg('EmptyResult', { index: step.stepIndex, tool: step.tool });
+        continue;
+      }
+
+      // ── Tool explicitly reported failure ─────────────────────────────────────
+      // Mark as 'failed' immediately so ResponseGenerator never ignores it
+      // and Groq cannot fill the gap with hallucinated data.
+      if (toolResult.toolFailed) {
+        results.push({
+          stepIndex: step.stepIndex, tool: step.tool, action: step.action,
+          status:   'failed', verified: false,
+          data:     toolResult,
+          elapsedMs: stepElapsed,
+        });
+        dbg('ToolFailed', { tool: step.tool, reply: toolResult.reply?.slice(0, 60) });
         continue;
       }
 
