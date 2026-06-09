@@ -251,10 +251,21 @@ async function detectTool(message, hasImage, preExtractedEntities) {
  * @param {string} message             - User message
  * @param {boolean} hasImage           - Whether an image is attached
  * @param {object} preExtractedEntities - Pre-extracted entities from Android
+ * @param {string} screenText          - Text extracted from the screen
  * @returns {Promise<{ tool: string|null, intent: string|null, entities: object, tier: number }>}
  */
-async function detectIntent(message, hasImage = false, preExtractedEntities = {}) {
-  return detectTool(message, hasImage, preExtractedEntities);
+async function detectIntent(message, hasImage = false, preExtractedEntities = {}, screenText = null) {
+  const result = await detectTool(message, hasImage, preExtractedEntities);
+  
+  // Phase 8: If the user asks to read the screen, it might classify as 'vision'.
+  // If there's no image but we have screenText, route to pure AI instead of failing the vision tool.
+  if (result.intent === 'vision' && !hasImage && !!screenText) {
+    dbg('ScreenReaderOverride', 'Intercepted vision intent to use screenText pure AI fallback');
+    result.tool = null;
+    result.intent = 'general_chat';
+  }
+  
+  return result;
 }
 
 // ── Capability Query Handler ───────────────────────────────────────────────
