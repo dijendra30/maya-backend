@@ -32,7 +32,7 @@ const VALID_INTENTS = [
   'send_message','call_contact','open_app','google_drive',
   'device_control','knowledge_query','general_chat',
   // internal tool names also accepted
-  'air_quality','location','youtube','vision','tasks','drive',
+  'air_quality','location','youtube','vision','tasks','drive','tavily',
 ];
 
 const SYSTEM_PROMPT = `You are an intent classifier for a voice assistant.
@@ -57,6 +57,7 @@ Given a user message, identify the single best intent:
   youtube        – watch video, find tutorial on youtube
   vision         – analyze image, describe photo
   tasks          – to-do, tasks, remind me
+  tavily         – search the web, lookup online, current events, internet search
 
 ENTITY EXTRACTION:
 Also extract entities from the message:
@@ -132,7 +133,7 @@ async function classifyWithGemini(message) {
 async function classifyWithGroq(message) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('GROQ_API_KEY not set');
-  const model  = process.env.GROQ_ROUTER_MODEL || 'llama-3.1-8b-instant';
+  const model  = process.env.GROQ_ROUTER_MODEL || 'llama-3.3-70b-versatile';
 
   const controller = new AbortController();
   const timer      = setTimeout(() => controller.abort(), 2500);
@@ -208,7 +209,7 @@ async function classify(message) {
 
   const providers = [
     { name: 'gemini', fn: () => classifyWithGemini(message) },
-    { name: 'groq',   fn: () => classifyWithGroq(message)   },
+    { name: 'groq',   fn: () => classifyWithGroq(message) }
   ];
 
   for (const { name, fn } of providers) {

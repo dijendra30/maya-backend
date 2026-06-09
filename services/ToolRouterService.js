@@ -50,6 +50,7 @@ const CalendarTool    = require('../tools/CalendarTool');
 const TasksTool       = require('../tools/TasksTool');
 const GmailTool       = require('../tools/GmailTool');
 const DriveTool       = require('../tools/DriveTool');
+const TavilyTool      = require('../tools/TavilyTool');
 const PermissionGuard = require('../auth/PermissionGuard');
 const IntentClassifier = require('./IntentClassifier');
 
@@ -152,6 +153,10 @@ const TRIGGERS = {
     // "what is" is very broad, but include it for wikipedia tier-1
     'what is ','what are ',
   ],
+  tavily: [
+    'search the web', 'look up online', 'search online', 'google search',
+    'find on the internet', 'current events', 'search tavily'
+  ]
 };
 
 const CAPABILITY_QUERIES = [
@@ -163,7 +168,7 @@ const CAPABILITY_QUERIES = [
 
 const PRIORITY = [
   'vision','calendar','tasks','gmail','drive',
-  'air_quality','weather','maps','music','news','location','youtube','wikipedia',
+  'air_quality','weather','maps','music','news','location','youtube','tavily','wikipedia',
 ];
 
 const SELF_QUESTIONS = [
@@ -194,6 +199,7 @@ const INTENT_TO_TOOL = {
   vision:        'vision',
   tasks:         'tasks',
   drive:         'drive',
+  tavily:        'tavily',
 };
 
 // ── Tier 1: Rule-based Detection ───────────────────────────────────────────
@@ -341,6 +347,9 @@ async function executeTool(toolName, message, location, options) {
 
     case 'youtube':
       return YouTubeTool.search(message);
+
+    case 'tavily':
+      return TavilyTool.fetch(message, location, options);
 
     case 'wikipedia':
       // Use Android pre-extracted topic directly — avoids re-parsing the raw sentence

@@ -46,6 +46,7 @@ const TOOL_ACTIONS = {
   maps:         'navigate',
   location:     'fetch_location',
   vision:       'analyze_image',
+  tavily:       'search_web',
   // device-side
   send_message:   'send_message',
   call_contact:   'call',
