@@ -47,6 +47,7 @@ async function handleChat(req, res) {
     userId,
     pendingContext,
     extractedEntities,
+    screenText,
   } = req.body || {};
 
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -80,7 +81,7 @@ async function handleChat(req, res) {
     // STAGE 1: INTENT DETECTION (Router)
     // ═══════════════════════════════════════════════════════════════════════
     const t1 = Date.now();
-    const detection = await ToolRouterService.detectIntent(trimmed, hasImage, entities || {});
+    const detection = await ToolRouterService.detectIntent(trimmed, hasImage, entities || {}, screenText);
     const detectMs  = Date.now() - t1;
 
     const detectedTool   = detection.tool;
@@ -151,15 +152,20 @@ async function handleChat(req, res) {
     // ── No tool / No steps: pure AI answer ─────────────────────────────────
     if (plan.steps.length === 0) {
       dbg('Stage2:NoSteps', 'Pure AI route');
+      
+      const aiContext = screenText 
+        ? `${memCtx}\n\n[USER SCREEN CONTENT: ${screenText}]` 
+        : memCtx;
+
       const genResult = await ResponseGenerator.generate({
         originalMessage: trimmed,
-        memoryContext:   memCtx,
+        memoryContext:   aiContext,
         pendingContext:  pendingCtx,
       });
 
       return await sendResponse(req, res, {
         reply: genResult.reply, provider: genResult.provider,
-        selectedTool: null, toolVerified: false, voice, memCtx, t0,
+        selectedTool: null, toolVerified: false, voice, memCtx: aiContext, t0,
       });
     }
 
@@ -211,10 +217,14 @@ async function handleChat(req, res) {
     // STAGE 5: RESPONSE GENERATION
     // ═══════════════════════════════════════════════════════════════════════
     const t4 = Date.now();
+    const finalAiContext = screenText 
+      ? `${memCtx}\n\n[USER SCREEN CONTENT: ${screenText}]` 
+      : memCtx;
+
     const genResult = await ResponseGenerator.generate({
       stepResults:     execResult.results,
       originalMessage: trimmed,
-      memoryContext:   memCtx,
+      memoryContext:   finalAiContext,
       pendingContext:  pendingCtx,
       selectedTool:    detectedTool,
     });
