@@ -115,6 +115,16 @@ const TOOL_REGISTRY = {
     description:  'Current time in any city or time zone.',
     icon:         '🕐',
   },
+  tavily: {
+    id:           'tavily',
+    label:        'Tavily Web Search',
+    installed:    true,
+    requiresAuth: false,
+    authProvider: 'none',
+    scopes:       [],
+    description:  'Real-time web search and current events.',
+    icon:         '🌐',
+  },
 
   // ── Device Tools (local, no OAuth) ────────────────────────────────────────
   device_actions: {
