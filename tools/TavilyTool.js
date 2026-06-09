@@ -1,29 +1,37 @@
 /**
  * Tavily Search Tool
- * Uses the Python microservice to execute searches via Tavily API
+ * Uses the official @tavily/core Node.js SDK to execute searches
  */
 
-const axios = require('axios');
+const { tavily } = require('@tavily/core');
 
 async function fetch(message, location, options = {}) {
-  // Use the local python service
-  // Adjust port if Python service runs elsewhere
-  const pythonServiceUrl = process.env.PYTHON_SERVICE_URL || 'http://127.0.0.1:8000';
-  
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) {
+    console.error('[TavilyTool] TAVILY_API_KEY is not defined in .env');
+    return {
+      reply: "Search is currently offline (missing API key).",
+      toolUsed: 'tavily',
+      toolVerified: false
+    };
+  }
+
   try {
-    const { data } = await axios.post(`${pythonServiceUrl}/search`, {
-      query: message,
-      search_depth: 'basic',
-      max_results: 5
+    const client = tavily({ apiKey });
+    
+    // Perform search
+    const response = await client.search(message, {
+      searchDepth: 'basic',
+      maxResults: 5
     });
 
-    if (data.results && data.results.length > 0) {
+    if (response.results && response.results.length > 0) {
       // Summarize the results into a string block
-      const resultText = data.results.map(r => `Title: ${r.title}\nContent: ${r.content}`).join('\n\n');
+      const resultText = response.results.map(r => `Title: ${r.title}\nContent: ${r.content}`).join('\n\n');
       return {
         reply: `Here is the search result from Tavily:\n\n${resultText}`,
         toolUsed: 'tavily',
-        search_data: data.results,
+        search_data: response.results,
         toolVerified: true
       };
     } else {
