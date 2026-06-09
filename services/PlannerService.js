@@ -222,7 +222,7 @@ function plan(message, intent, toolName, entities = {}) {
   }
 
   // ── Single-step plan ─────────────────────────────────────────────────────
-  if (!toolName && !intent) {
+  if (!toolName && (!intent || intent === 'knowledge_query' || intent === 'general_chat')) {
     // Pure AI / knowledge query — no tool steps
     dbg('NoTool', 'Pure AI query, empty plan');
     return { steps: [], requiresCollection: false, collectionMode: null };
