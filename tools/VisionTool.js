@@ -9,6 +9,7 @@
  */
 
 const axios = require('axios');
+const KeyManager = require('../utils/GeminiKeyManager');
 
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
 
@@ -26,13 +27,11 @@ function buildVisionPrompt(message) {
   if (/document|paper|form|letter|receipt|bill/.test(lower)) return DEFAULT_PROMPTS.document;
   if (/scene|place|where is this|describe/.test(lower)) return DEFAULT_PROMPTS.scene;
   if (/what is this|what is that|identify|object/.test(lower)) return DEFAULT_PROMPTS.object;
-  // Use the user's actual question as the prompt
   return message.trim() || DEFAULT_PROMPTS.general;
 }
 
 async function analyze(message, imageBase64, mimeType = 'image/jpeg') {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  if (!KeyManager.hasKey()) {
     return { reply: 'Vision tool is not configured. Please add GEMINI_API_KEY.', toolUsed: 'vision' };
   }
   if (!imageBase64) {
@@ -40,31 +39,44 @@ async function analyze(message, imageBase64, mimeType = 'image/jpeg') {
   }
 
   const prompt = buildVisionPrompt(message);
+  const payload = {
+    contents: [{
+      parts: [
+        { text: prompt },
+        { inline_data: { mime_type: mimeType, data: imageBase64 } },
+      ],
+    }],
+    generationConfig: { maxOutputTokens: 300, temperature: 0.3 },
+  };
 
-  try {
-    const { data } = await axios.post(
-      `${GEMINI_URL}?key=${apiKey}`,
-      {
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType, data: imageBase64 } },
-          ],
-        }],
-        generationConfig: { maxOutputTokens: 300, temperature: 0.3 },
-      },
-      { timeout: 20000 }
-    );
+  let lastError;
+  const keysToTry = Math.max(1, KeyManager.getAllKeys().length);
 
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!reply) return { reply: 'Could not analyze the image. Please try again.', toolUsed: 'vision' };
+  for (let i = 0; i < keysToTry; i++) {
+    const apiKey = KeyManager.getNextKey();
+    try {
+      const { data } = await axios.post(
+        `${GEMINI_URL}?key=${apiKey}`,
+        payload,
+        { timeout: 20000 }
+      );
 
-    return { reply, toolUsed: 'vision' };
+      const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (!reply) return { reply: 'Could not analyze the image. Please try again.', toolUsed: 'vision' };
 
-  } catch (err) {
-    console.error(`[VisionTool] Error: ${err.message}`);
-    return { reply: 'Vision analysis failed. Please try again.', toolUsed: 'vision' };
+      return { reply, toolUsed: 'vision' };
+
+    } catch (err) {
+      lastError = err;
+      const status = err.response?.status;
+      if (status === 400) break; // 400 Bad Request won't be fixed by another key
+      console.warn(`[VisionTool] Key failed with status ${status || err.message}, trying next key...`);
+    }
   }
+
+  console.error(`[VisionTool] Error: ${lastError?.message}`);
+  return { reply: 'Vision analysis failed. Please try again.', toolUsed: 'vision' };
 }
 
 module.exports = { analyze };
+

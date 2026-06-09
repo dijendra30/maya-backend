@@ -1,4 +1,5 @@
 const axios = require('axios');
+const KeyManager = require('../utils/GeminiKeyManager');
 
 /**
  * Gemini Provider — Phase 3 (Memory Context Support)
@@ -33,11 +34,9 @@ PERSONA:
 - Use memory context silently to personalise responses without mentioning it.`;
 
 async function complete(message, context = '', pendingContext = '') {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY is not set in .env');
+  if (!KeyManager.hasKey()) throw new Error('GEMINI_API_KEY is not set in .env');
 
   const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-  const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   // Phase 3: prepend long-term memory context
   const systemText = context
@@ -49,33 +48,51 @@ async function complete(message, context = '', pendingContext = '') {
     ? `${systemText}\n\nACTIVE SLOT CONTEXT (internal only, never repeat to user):\n${pendingContext}`
     : systemText;
 
-  const response = await axios.post(
-    url,
-    {
-      system_instruction: {
-        parts: [{ text: finalSystem }]
-      },
-      contents: [
-        {
-          role:  'user',
-          parts: [{ text: message }]
-        }
-      ],
-      generationConfig: {
-        maxOutputTokens: 512,
-        temperature:     0.72,
-      }
+  const payload = {
+    system_instruction: {
+      parts: [{ text: finalSystem }]
     },
-    {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 30000,
+    contents: [
+      {
+        role:  'user',
+        parts: [{ text: message }]
+      }
+    ],
+    generationConfig: {
+      maxOutputTokens: 512,
+      temperature:     0.72,
     }
-  );
+  };
 
-  const reply = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!reply) throw new Error('Gemini returned an empty response');
+  let lastError;
+  const keysToTry = Math.max(1, KeyManager.getAllKeys().length);
 
-  return reply.trim();
+  for (let i = 0; i < keysToTry; i++) {
+    const apiKey = KeyManager.getNextKey();
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    try {
+      const response = await axios.post(url, payload, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 30000,
+      });
+
+      const reply = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!reply) throw new Error('Gemini returned an empty response');
+
+      return reply.trim();
+    } catch (err) {
+      lastError = err;
+      const status = err.response?.status;
+      // 400 Bad Request won't be fixed by trying another key
+      if (status === 400) throw err;
+      
+      console.warn(`[GeminiProvider] Key failed with status ${status || err.message}, trying next key...`);
+    }
+  }
+
+  throw lastError;
 }
 
 module.exports = { complete };
+
